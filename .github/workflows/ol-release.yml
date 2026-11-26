@@ -1,0 +1,156 @@
+# .github/workflows/ol-release.yml (Oberon fork only)
+# Build and publish the Oberon release image: the stock Philo image from the
+# upstream ./Dockerfile, layered with oberon/Dockerfile.
+# - ol-v* tags      -> ghcr.io/oberonlogistics/philo:<tag>, nothing else
+# - manual dispatch -> (re)build an existing ol-v* tag; a new digest under the same tag
+# Upstream's docker-publish.yml owns :latest, :edge and the semver tags in the
+# same package, so this workflow never pushes those. See oberon/DEPLOY.md §2.
+name: Oberon release image
+
+on:
+  push:
+    tags: ['ol-v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing ol-v<upstream version>-<n> tag to build and publish (e.g. ol-v0.5.1-1)"
+        required: true
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/oberonlogistics/philo
+
+concurrency:
+  group: ol-release-${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.tag) || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  oberon-release-image:
+    name: Oberon release image
+    if: github.repository == 'oberonlogistics/philo'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate tag
+        id: tag
+        env:
+          TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: |
+          # `[[ =~ ]]` matches the whole string, so a multi-line input can't
+          # smuggle extra lines into GITHUB_OUTPUT.
+          [[ "$TAG" =~ ^ol-v[0-9]+\.[0-9]+\.[0-9]+-[0-9]+$ ]] || {
+            echo "::error::tag '$TAG' is not a valid Oberon release tag (expected ol-vX.Y.Z-N)"; exit 1; }
+          V="${TAG#ol-v}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "upstream_version=${V%-*}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: refs/tags/${{ steps.tag.outputs.tag }}
+          # Full history, so origin/main is there for the ancestry check below.
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Release only reviewed code: the tagged commit must already be on main.
+      - name: Check tag is on main
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          git merge-base --is-ancestor HEAD origin/main || {
+            echo "::error::tag $TAG points at $(git rev-parse HEAD), which is not on main"; exit 1; }
+
+      - name: Check tag matches package.json
+        env:
+          WANT: ${{ steps.tag.outputs.upstream_version }}
+        run: |
+          HAVE="$(jq -r .version package.json)"
+          [ "$HAVE" = "$WANT" ] || {
+            echo "::error::tag names upstream version $WANT but package.json is $HAVE"; exit 1; }
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Build stock image (local)
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: philo-upstream:local
+          cache-from: type=gha,scope=ol-release
+          cache-to: type=gha,mode=max,scope=ol-release
+
+      # setup-buildx makes a docker-container builder current, and it can't
+      # see images in the local daemon. The layer is built with the daemon's
+      # own `default` builder, which can, and which loads the result.
+      - name: Build Oberon image (local)
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+        run: |
+          docker buildx build --builder default -f oberon/Dockerfile \
+            --build-arg PHILO_BASE=philo-upstream:local \
+            --label "org.opencontainers.image.source=$REPO_URL" \
+            --label "org.opencontainers.image.revision=$(git rev-parse HEAD)" \
+            --label "org.opencontainers.image.version=$TAG" \
+            --label "org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            -t "$IMAGE:$TAG" .
+
+      # Same boot check as upstream's docker-publish.yml, against the layered
+      # image, plus the Oberon files and (once upstream sets one) the PWA CSP.
+      - name: Smoke test image
+        env:
+          REF: ${{ env.IMAGE }}:${{ steps.tag.outputs.tag }}
+          WANT: ${{ steps.tag.outputs.upstream_version }}
+        run: |
+          docker run -d --name philo-smoke -p 3000:3000 "$REF"
+          ok=0
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:3000/version -o version.json; then ok=1; break; fi
+            sleep 1
+          done
+          fail() { docker logs philo-smoke; docker rm -f philo-smoke; echo "::error::$1"; exit 1; }
+          [ "$ok" -eq 1 ] || fail "container never served GET /version"
+          cat version.json
+          jq -e --arg v "$WANT" '.name == "philo" and .version == $v' version.json \
+            || fail "GET /version returned an unexpected payload (want version $WANT)"
+
+          shopt -s nullglob
+          for f in oberon/web/*.js oberon/web/*.css; do
+            curl -fsS -o /dev/null "http://127.0.0.1:3000/oberon/${f##*/}" \
+              || fail "GET /oberon/${f##*/} did not return 200"
+            echo "served /oberon/${f##*/}"
+          done
+
+          # Only once upstream's standalone app sets a CSP: then the layer must keep it.
+          if grep -rqi 'content-security-policy' apps/standalone/src; then
+            curl -fsS -D headers.txt -o /dev/null http://127.0.0.1:3000/
+            grep -qi '^content-security-policy:' headers.txt \
+              || fail "GET / has no Content-Security-Policy header"
+            echo "CSP header present"
+          fi
+          docker rm -f philo-smoke
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push
+        env:
+          REF: ${{ env.IMAGE }}:${{ steps.tag.outputs.tag }}
+        run: |
+          docker push "$REF"
+          DIGEST="$(docker image inspect "$REF" --format '{{index .RepoDigests 0}}')"
+          {
+            echo "### Oberon release image"
+            echo
+            echo "| Tag | Pinned reference |"
+            echo "|---|---|"
+            echo "| \`$REF\` | \`$REF@${DIGEST#*@}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "Pushed $REF@${DIGEST#*@}"
