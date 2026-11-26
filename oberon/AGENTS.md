@@ -153,7 +153,7 @@ not part of the fork merge bar.
 - Tag a fork release on `main` as `ol-v<upstream version>-<n>`, for example `ol-v0.5.1-1`. The
   `ol-` prefix keeps upstream's `v*` tag trigger from firing.
 - Production at `https://philo.oberonlogistics.com` runs the stock upstream image on its own host.
-  The plan to move it is [`DEPLOY.md`](DEPLOY.md). It has open decisions, so change nothing in
+  The plan to cut it over to the fork image (same host) is [`DEPLOY.md`](DEPLOY.md). It has open decisions, so change nothing in
   production until a human has settled them.
 
 ## Integration contracts (sibling repositories)
