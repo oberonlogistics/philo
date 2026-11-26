@@ -2,9 +2,11 @@ import { serve } from '@hono/node-server'
 import { createMcpApp } from '@philo/mcp'
 import { bootServer, loadConfig, VERSION } from '@philo/server'
 import { createStandaloneApp } from './app.ts'
+import { loadOberonNotifyConfig, startOberonNotify } from './oberon/notify.ts'
 
 const config = loadConfig()
 const server = bootServer(config)
+startOberonNotify(server.changes, loadOberonNotifyConfig(process.env, config)) // Oberon: off unless OL_NOTIFY_* is set
 
 // In-process: the MCP app's SDK calls go through the server's own request
 // handling, auth included, without a socket in between.
