@@ -289,6 +289,11 @@ Full rationale: [ADR-0010](adr/0010-change-feed-and-webhooks.md).
   An entrypoint that embeds the server can listen in process too:
   `bootServer` returns the feed as `changes`, listen-only, and `ChangeEvent`
   is exported from `@philo/server`.
+  Every event names its `actor` in the timeline's words — `user:<id>`,
+  `api_key:<id>`, `oauth:<client_id>`, or `form:<form_key>` for an intake
+  submission; a lead promoted out of spam names whoever promoted it. A receiver
+  that writes back uses it to skip its own changes, and an integration to tell
+  a person from an agent.
 - **The PWA stays current.** `GET /api/v1/events` (optional `?funnel=`) streams
   the feed as SSE, read with `fetch` like `/push/live`. The board, the lead list
   and an open lead refetch what an event touches.
