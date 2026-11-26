@@ -1,5 +1,8 @@
 # philo — Agent Guide
 
+> **Oberon Logistics fork:** read [`oberon/AGENTS.md`](oberon/AGENTS.md) first. It overrides this file's
+> sync, merge, release and versioning rules for this repository.
+
 This file is for AI coding agents working on this codebase. Read it before making changes.
 
 ## Sync with origin — before and after every task

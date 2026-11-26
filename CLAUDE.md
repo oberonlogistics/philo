@@ -1,5 +1,8 @@
 # philo — Claude Code Guide
 
+> **Oberon Logistics fork:** read [`oberon/AGENTS.md`](oberon/AGENTS.md) first. It overrides this file's
+> sync, merge, release and versioning rules for this repository.
+
 The full agent guide is [`AGENTS.md`](AGENTS.md) — project scope, naming,
 guardrails, shippability bar, triage rules, and release workflow. Read it
 before making changes. This file carries only what must load every session.
