@@ -1,0 +1,90 @@
+/*
+ * philo-ol.css: Philo's design tokens, redefined as the shared Oberon Logistics tokens (oberon/docs/chrome.md §4).
+ *
+ * The host script (philo-host.js) adds it after ${issuer}/chrome/v1/tokens.css, which defines the --ol-* values for
+ * light and dark. Philo keeps its own stylesheet; this file only points Philo's variables at the shared ones, under
+ * the same three selectors as apps/web/src/index.css, so it wins over each of Philo's blocks at equal specificity.
+ *
+ * Every var() falls back to Philo's own value for that scheme, so if tokens.css fails to load the page looks exactly
+ * as it does without this file.
+ */
+
+:root {
+  --font-ui: var(--ol-font-sans, system-ui, -apple-system, 'Segoe UI', sans-serif);
+  --font-mono: var(--ol-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+
+  --bg: var(--ol-color-bg, #f4f6f8);
+  --surface: var(--ol-color-surface, #ffffff);
+  --surface-sunken: var(--ol-color-surface-2, #eef1f4);
+  --surface-hover: var(--ol-color-surface-2, #e6eaee);
+  --border: var(--ol-color-border, #d9dee3);
+  --border-strong: var(--ol-color-border-strong, #b3bdc7);
+  --text: var(--ol-color-text, #14191e);
+  --muted: var(--ol-color-muted, #5b6672);
+  --accent: var(--ol-color-action, #1a5fa8);
+  --accent-soft: var(--ol-color-primary-soft, #e3edf8);
+  --accent-contrast: var(--ol-color-on-primary, #ffffff);
+  --error: var(--ol-color-danger, #a4231c);
+  --error-bg: var(--ol-color-danger-soft, #fdecea);
+  --warn: var(--ol-color-warn, #6b4d05);
+  --warn-bg: var(--ol-color-warn-soft, #fdf4dc);
+  --shadow-card: var(--ol-shadow-sm, 0 1px 2px rgb(20 25 30 / 0.06));
+  --shadow-pop: var(--ol-shadow-pop, 0 10px 30px rgb(20 25 30 / 0.16), 0 1px 3px rgb(20 25 30 / 0.08));
+
+  --brand: var(--ol-color-primary, #1a5fa8);
+  --brand-contrast: var(--ol-color-on-primary, #ffffff);
+
+  --radius: var(--ol-radius, 6px);
+  --radius-lg: var(--ol-radius-lg, 8px);
+  --topbar-height: var(--ol-topbar-height, 3.25rem);
+
+  /* --warn-border has no shared token and keeps Philo's value. */
+}
+
+:root[data-theme='dark'] {
+  --bg: var(--ol-color-bg, #14181c);
+  --surface: var(--ol-color-surface, #1b2126);
+  --surface-sunken: var(--ol-color-surface-2, #171c21);
+  --surface-hover: var(--ol-color-surface-2, #262e35);
+  --border: var(--ol-color-border, #2d363e);
+  --border-strong: var(--ol-color-border-strong, #46525d);
+  --text: var(--ol-color-text, #e6ebef);
+  --muted: var(--ol-color-muted, #98a4b0);
+  --accent: var(--ol-color-action, #7db4ec);
+  --accent-soft: var(--ol-color-primary-soft, #1d2f43);
+  --accent-contrast: var(--ol-color-on-primary, #0d1216);
+  --error: var(--ol-color-danger, #f2b8b5);
+  --error-bg: var(--ol-color-danger-soft, #3a1e1c);
+  --warn: var(--ol-color-warn, #f0d18a);
+  --warn-bg: var(--ol-color-warn-soft, #33290f);
+  --shadow-card: var(--ol-shadow-sm, 0 1px 2px rgb(0 0 0 / 0.3));
+  --shadow-pop: var(--ol-shadow-pop, 0 12px 32px rgb(0 0 0 / 0.5), 0 1px 3px rgb(0 0 0 / 0.4));
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --bg: var(--ol-color-bg, #14181c);
+    --surface: var(--ol-color-surface, #1b2126);
+    --surface-sunken: var(--ol-color-surface-2, #171c21);
+    --surface-hover: var(--ol-color-surface-2, #262e35);
+    --border: var(--ol-color-border, #2d363e);
+    --border-strong: var(--ol-color-border-strong, #46525d);
+    --text: var(--ol-color-text, #e6ebef);
+    --muted: var(--ol-color-muted, #98a4b0);
+    --accent: var(--ol-color-action, #7db4ec);
+    --accent-soft: var(--ol-color-primary-soft, #1d2f43);
+    --accent-contrast: var(--ol-color-on-primary, #0d1216);
+    --error: var(--ol-color-danger, #f2b8b5);
+    --error-bg: var(--ol-color-danger-soft, #3a1e1c);
+    --warn: var(--ol-color-warn, #f0d18a);
+    --warn-bg: var(--ol-color-warn-soft, #33290f);
+    --shadow-card: var(--ol-shadow-sm, 0 1px 2px rgb(0 0 0 / 0.3));
+    --shadow-pop: var(--ol-shadow-pop, 0 12px 32px rgb(0 0 0 / 0.5), 0 1px 3px rgb(0 0 0 / 0.4));
+  }
+}
+
+/* The current tab's underline: the shared green rule, which never sits behind text. Same selector as Philo's, so
+   it wins by coming later; without tokens.css it stays Philo's accent. */
+.topnav a[aria-current='page'] {
+  border-bottom-color: var(--ol-color-accent, var(--accent));
+}

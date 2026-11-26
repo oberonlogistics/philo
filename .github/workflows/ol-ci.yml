@@ -1,0 +1,36 @@
+# .github/workflows/ol-ci.yml (Oberon fork only)
+# The Oberon layer's own tests. Upstream's ci.yml runs `npm test`, which covers
+# only the npm workspaces (packages/*, apps/*); oberon/web is not one, and
+# making it one would edit upstream's package.json. oberon/scripts/verify.sh
+# runs the same step locally.
+name: Oberon CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ol-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  oberon-web:
+    name: Oberon web tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      - run: npx vitest run --root oberon/web
