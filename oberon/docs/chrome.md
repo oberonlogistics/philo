@@ -278,7 +278,7 @@ unedited.
 
 | File | What it is |
 |---|---|
-| `oberon/web/philo-host.js` | The host script (§3.2). Framework-free, a classic script with no build step, about 150 lines. |
+| `oberon/web/philo-host.js` | The host script (§3.2). Framework-free, a classic script with no build step, about 310 lines. |
 | `oberon/web/philo-ol.css` | Maps Philo's CSS variables onto `--ol-*` tokens (§4). |
 | `oberon/web/test/*.test.ts` | Tests against a stub chrome (§6). Run by `oberon/scripts/verify.sh`. |
 | `oberon/Dockerfile` | Copies `oberon/web/*.js` and `*.css` into `apps/web/dist/oberon/` so they're served same-origin at `/oberon/…`. `oberon/DEPLOY.md`, not yet written, carries the env. |

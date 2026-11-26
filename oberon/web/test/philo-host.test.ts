@@ -30,10 +30,33 @@ declare global {
 
 const TAGS = ['ol-notifications', 'ol-app-switcher', 'ol-account-menu', 'ol-search-button']
 
+/**
+ * What the stub elements do when they connect. The registry outlives a test, so the elements are defined once and
+ * each test sets this hook. The default attaches an open shadow root, as every chrome element does.
+ */
+let onConnect: (el: HTMLElement) => void
+/** The order of connects and chrome calls, for tests that care about it. */
+let calls: string[]
+
 /** What the real ol-chrome.js would do when it runs: define the elements and window.OLChrome. */
 function runStubChrome(): Stub {
-  for (const tag of TAGS) if (!customElements.get(tag)) customElements.define(tag, class extends HTMLElement {})
-  const stub = { configure: vi.fn(), refresh: vi.fn() }
+  for (const tag of TAGS) {
+    if (!customElements.get(tag)) {
+      customElements.define(
+        tag,
+        class extends HTMLElement {
+          connectedCallback() {
+            calls.push(`connect ${this.localName}`)
+            onConnect(this)
+          }
+        },
+      )
+    }
+  }
+  const stub = {
+    configure: vi.fn(() => void calls.push('configure')),
+    refresh: vi.fn(() => void calls.push('refresh')),
+  }
   window.OLChrome = stub
   return stub
 }
@@ -131,6 +154,10 @@ beforeEach(() => {
   document.body.replaceChildren()
   delete document.documentElement.dataset.theme
   stubMatchMedia(false)
+  calls = []
+  onConnect = (el) => {
+    if (!el.shadowRoot) el.attachShadow({ mode: 'open' })
+  }
   ;(0, eval)(HOST_SOURCE)
 })
 
@@ -152,6 +179,8 @@ describe('philo-host.js', () => {
     const script = chromeScript()!
     expect(script).not.toBeNull()
     expect(script.async).toBe(true)
+    // CORS mode, so the chrome's own errors reach the host unmuted (OL Auth sends ACAO to launch origins).
+    expect(script.crossOrigin).toBe('anonymous')
     expect(script.dataset.issuer).toBe(ISSUER)
     expect('deferConfig' in script.dataset).toBe(true)
     // The scripts come after the stylesheets, so the mapping sees the tokens.
@@ -406,6 +435,88 @@ describe('philo-host.js', () => {
       expect(chromeScript()).toBeNull()
     })
 
+    it('configures the chrome before the elements connect on a first load', async () => {
+      const { ctx } = makeCtx()
+      await mountWithChrome(ctx)
+      expect(calls.indexOf('configure')).toBeGreaterThanOrEqual(0)
+      expect(calls.indexOf('configure')).toBeLessThan(calls.indexOf('connect ol-account-menu'))
+      expect(calls).not.toContain('refresh')
+    })
+
+    it('rejects when the account menu does not upgrade (no shadow root after connecting)', async () => {
+      onConnect = () => undefined
+      const { ctx } = makeCtx()
+      await expect(mountWithChrome(ctx)).rejects.toThrow(/ol-account-menu/)
+      expect(ctx.slot.childElementCount).toBe(0)
+      expect(document.head.querySelectorAll('link').length).toBe(0)
+      expect(ctx.fallback).not.toHaveBeenCalled()
+      // Its getToken is dead after the failed mount.
+      await expect(lastOptions(window.OLChrome!).getToken({ audience: 'auth' })).resolves.toBeNull()
+    })
+
+    it('rejects when the account menu throws while it renders', async () => {
+      onConnect = (el) => {
+        if (!el.shadowRoot) el.attachShadow({ mode: 'open' })
+        if (el.localName !== 'ol-account-menu') return
+        // What a browser reports for a throw in a CORS-mode script's connectedCallback.
+        window.dispatchEvent(new ErrorEvent('error', { filename: CHROME_URL, message: 'TypeError: render' }))
+      }
+      const { ctx } = makeCtx()
+      await expect(mountWithChrome(ctx)).rejects.toThrow(/threw/)
+      expect(ctx.slot.childElementCount).toBe(0)
+      expect(ctx.fallback).not.toHaveBeenCalled()
+    })
+
+    it('rejects when the account menu reports an error while it connects', async () => {
+      onConnect = (el) => {
+        if (!el.shadowRoot) el.attachShadow({ mode: 'open' })
+        if (el.localName === 'ol-account-menu') {
+          el.dispatchEvent(new CustomEvent('ol-chrome-error', { bubbles: true, composed: true, detail: {} }))
+        }
+      }
+      const { ctx } = makeCtx()
+      await expect(mountWithChrome(ctx)).rejects.toThrow(/error/)
+      expect(ctx.slot.childElementCount).toBe(0)
+    })
+
+    it('waits for an account menu defined late, and rejects if it never is', async () => {
+      const { ctx } = makeCtx()
+      const pending = window.PhiloHost!.mount(ctx)
+      await flush()
+      const stub = runStubChrome()
+      let define!: () => void
+      vi.spyOn(customElements, 'get').mockReturnValue(undefined)
+      vi.spyOn(customElements, 'whenDefined').mockReturnValue(
+        new Promise((resolve) => {
+          define = () => resolve(HTMLElement as CustomElementConstructor)
+        }),
+      )
+      onConnect = () => undefined // not upgraded yet
+      chromeScript()!.dispatchEvent(new Event('load'))
+      await flush()
+      const menu = ctx.slot.querySelector('ol-account-menu') as HTMLElement
+      menu.attachShadow({ mode: 'open' }) // the late definition upgrades it
+      define()
+      await expect(pending).resolves.toEqual({ replaces: ['account-menu'] })
+      expect(stub.configure).toHaveBeenCalledTimes(1)
+
+      // A later mount whose chrome never defines the menu: the readiness timeout rejects.
+      const again = makeCtx()
+      vi.useFakeTimers()
+      try {
+        vi.spyOn(customElements, 'whenDefined').mockReturnValue(new Promise(() => undefined))
+        const settled = window.PhiloHost!.mount(again.ctx).then(
+          () => 'resolved',
+          (error: Error) => error.message,
+        )
+        await vi.advanceTimersByTimeAsync(10_000)
+        await expect(settled).resolves.toMatch(/ol-account-menu/)
+        expect(again.ctx.slot.childElementCount).toBe(0)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
     it('can try again on a later mount after a failed load', async () => {
       const first = makeCtx()
       const pending = window.PhiloHost!.mount(first.ctx)
@@ -432,6 +543,10 @@ describe('philo-host.js', () => {
     expect(stub.configure).toHaveBeenCalledTimes(2)
     expect(stub.refresh).toHaveBeenCalledTimes(1)
     expect(second.ctx.slot.querySelector('ol-account-menu')).not.toBeNull()
+    // Configured and refreshed before the new menu connects, so it never reads the last session's cached /me.
+    const tail = calls.slice(calls.lastIndexOf('configure'))
+    expect(tail.slice(0, 2)).toEqual(['configure', 'refresh'])
+    expect(tail).toContain('connect ol-account-menu')
     // The first mount's getToken stays dead; the new one works.
     await expect((stub.configure.mock.calls[0][0] as ChromeOptions).getToken({ audience: 'auth' })).resolves.toBeNull()
     await expect(lastOptions(stub).getToken({ audience: 'auth' })).resolves.toBe('token')
@@ -485,10 +600,18 @@ describe('philo-host.js', () => {
     it('falls back when the chrome script throws at run time', async () => {
       const { ctx } = makeCtx()
       await mountWithChrome(ctx)
-      window.dispatchEvent(new ErrorEvent('error', { filename: CHROME_URL, message: 'TypeError' }))
+      // A CORS-mode script's error carries its URL, as a browser reports it.
+      window.dispatchEvent(new ErrorEvent('error', { filename: CHROME_URL, message: 'TypeError: x is undefined' }))
       expect(ctx.fallback).toHaveBeenCalledTimes(1)
       window.dispatchEvent(new ErrorEvent('error', { filename: 'https://philo.example.test/assets/app.js', message: 'x' }))
       expect(ctx.fallback).toHaveBeenCalledTimes(1)
+    })
+
+    it('does not fall back for a muted cross-origin error, which names no script', async () => {
+      const { ctx } = makeCtx()
+      await mountWithChrome(ctx)
+      window.dispatchEvent(new ErrorEvent('error', { filename: '', message: 'Script error.', lineno: 0 }))
+      expect(ctx.fallback).not.toHaveBeenCalled()
     })
 
     it('ignores errors from other scripts', async () => {

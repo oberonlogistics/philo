@@ -6,9 +6,12 @@
  * from OL Auth at ${ctx.issuer}/chrome/v1/, fills the top-bar slot with the bell, the app switcher and the account
  * menu, and replaces Philo's own account menu. Spec: oberon/docs/chrome.md §3.2 and §4.
  *
- * Failure rules. Before mount resolves, any failure rejects, so Philo keeps its own menu. After it resolves, a
- * failure the host can see (the account menu reports an error before it has drawn, the menu leaves the slot, or the
- * chrome throws) calls ctx.fallback(), and Philo shows its own menu again. Either way the person can sign out.
+ * Failure rules. Before mount resolves, any failure rejects, so Philo keeps its own menu: the script does not load,
+ * defines no OLChrome, the account menu does not upgrade within READY_MS, or it throws or reports an error while it
+ * connects. After it resolves, a failure the host can see (the account menu reports an error before the person has
+ * used it, the menu leaves the slot, or the chrome throws) calls ctx.fallback(), and Philo shows its own menu again.
+ * Either way the person can sign out. The script loads in CORS mode (OL Auth answers launch origins with ACAO), so
+ * its errors carry its URL; a muted "Script error." names no script and is not counted.
  *
  * A classic script with no build step and no dependencies. Nothing here is copied from the chrome's source.
  */
@@ -22,6 +25,8 @@
   const THEMES = ['light', 'dark', 'system']
   const AUTH_SCOPE = 'auth:apps auth:account'
   const NOTIFY_SCOPE = 'notify:read'
+  /** How long the account menu may take to upgrade when the chrome defines it after its script has loaded. */
+  const READY_MS = 5000
 
   /** One load of ol-chrome.js per page, shared by every mount; cleared on failure so a later mount can try again. */
   let pendingChrome = null
@@ -63,6 +68,7 @@
         script.remove()
         reject(new Error(`PhiloHost: ol-chrome.js failed to load from ${src}`))
       }, { once: true })
+      script.crossOrigin = 'anonymous'
       script.src = src
       script.async = true
       script.dataset.issuer = issuer
@@ -144,8 +150,23 @@
     }
     const chrome = window.OLChrome
 
-    // 2. The slot: bell (only with the shared feed), switcher, account menu. No toast-new: Philo's new leads already
-    //    reach the person by push and email.
+    // Before mount resolves a failure is recorded and rejects; after, it gives Philo its own menu back.
+    let resolved = false
+    let failure = null
+    let fallBack = null
+    const fail = (reason) => {
+      if (!resolved) failure = failure || reason
+      else if (fallBack) fallBack()
+    }
+    const failed = () => {
+      if (!failure) return false
+      signal.removeEventListener('abort', cleanup)
+      cleanup()
+      return true
+    }
+
+    // 2. The elements: bell (only with the shared feed), switcher, account menu. No toast-new: Philo's new leads
+    //    already reach the person by push and email. Built now, inserted after the chrome is configured.
     const slot = ctx.slot
     const items = (ctx.accountItems || []).map((item) => {
       const a = el('a', { slot: 'item', href: item.path }, [item.label])
@@ -161,21 +182,11 @@
     const parts = []
     if (notifyUrl) parts.push(el('ol-notifications'))
     parts.push(el('ol-app-switcher', { current: ctx.clientId }), menu)
-    slot.replaceChildren(...parts)
-    undo.push(() => slot.replaceChildren())
 
-    // Compact account menu on narrow screens.
-    if (typeof window.matchMedia === 'function') {
-      const media = window.matchMedia(COMPACT_QUERY)
-      const apply = () => menu.toggleAttribute('compact', media.matches)
-      apply()
-      media.addEventListener('change', apply)
-      undo.push(() => media.removeEventListener('change', apply))
-    }
-
-    // 3. Configure the chrome. Tokens only for OL Auth's API and Notify's resource, which are the operator's
-    //    allow-list (PHILO_WEB_HOST_TOKEN_RESOURCES); Philo refuses anything else anyway. No prompt: OL Auth answers
-    //    a first silent request for a new audience only without one.
+    // 3. Configure the chrome before any element connects, so a reused chrome never draws the last session's
+    //    cached account. Tokens only for OL Auth's API and Notify's resource, which are the operator's allow-list
+    //    (PHILO_WEB_HOST_TOKEN_RESOURCES); Philo refuses anything else anyway. No prompt: OL Auth answers a first
+    //    silent request for a new audience only without one.
     let live = true
     undo.push(() => {
       live = false
@@ -199,6 +210,65 @@
     // A chrome already on the page (an earlier sign-in) holds the last person's account and apps.
     if (!freshLoad && typeof chrome.refresh === 'function') chrome.refresh()
 
+    // Watch for the chrome's failures before inserting: a menu that throws while it renders does so during insert.
+    // ol-theme-change fires only from the theme control, so it means the person has used a drawn menu (and with it
+    // Sign out). It does not prove every later error is harmless; today the only one after it is a failed theme save.
+    let used = false
+    const onThemeChange = () => {
+      used = true
+    }
+    const onMenuError = () => {
+      if (!used) fail(new Error('PhiloHost: the account menu reported an error'))
+    }
+    menu.addEventListener('ol-theme-change', onThemeChange)
+    menu.addEventListener('ol-chrome-error', onMenuError)
+    undo.push(() => {
+      menu.removeEventListener('ol-theme-change', onThemeChange)
+      menu.removeEventListener('ol-chrome-error', onMenuError)
+    })
+    const chromeSrc = `${base}ol-chrome.js`
+    const onWindowError = (event) => {
+      if (event && event.filename === chromeSrc) fail(new Error('PhiloHost: ol-chrome.js threw'))
+    }
+    window.addEventListener('error', onWindowError)
+    undo.push(() => window.removeEventListener('error', onWindowError))
+
+    slot.replaceChildren(...parts)
+    undo.push(() => slot.replaceChildren())
+    if (failed()) throw failure
+
+    // The account menu is required: it must upgrade (every chrome element has an open shadow root). A chrome that
+    // defines it after its script loads gets READY_MS.
+    if (!menu.shadowRoot && !customElements.get('ol-account-menu')) {
+      let timer
+      try {
+        await untilLoadedOrAborted(
+          Promise.race([
+            customElements.whenDefined('ol-account-menu'),
+            new Promise((resolve) => {
+              timer = setTimeout(resolve, READY_MS)
+            }),
+          ]),
+          signal,
+        )
+      } catch (error) {
+        failure = failure || error
+      } finally {
+        clearTimeout(timer)
+      }
+    }
+    if (!menu.shadowRoot) fail(new Error('PhiloHost: the chrome did not upgrade ol-account-menu'))
+    if (failed()) throw failure
+
+    // Compact account menu on narrow screens.
+    if (typeof window.matchMedia === 'function') {
+      const media = window.matchMedia(COMPACT_QUERY)
+      const apply = () => menu.toggleAttribute('compact', media.matches)
+      apply()
+      media.addEventListener('change', apply)
+      undo.push(() => media.removeEventListener('change', apply))
+    }
+
     // 4. Theme: the chrome applies the account's theme to data-theme; pass every change to Philo's store. The last
     //    value seen is the loop guard, because setTheme writes the same attribute back.
     let lastTheme = themeAtMount
@@ -214,9 +284,8 @@
     syncTheme() // a theme the chrome applied while it loaded
 
     // After mount: give Philo its own menu back on a failure we can see.
-    let drawn = false
     let fellBack = false
-    const fallBack = () => {
+    fallBack = () => {
       if (fellBack || !live) return
       fellBack = true
       themeObserver.disconnect() // Philo's own picker owns the theme again
@@ -224,34 +293,15 @@
       menu.remove()
       if (typeof ctx.fallback === 'function') ctx.fallback()
     }
-    // The theme control exists only in a drawn menu, so a theme change from it proves the menu drew (and with it,
-    // Sign out). An error before that (OL Auth's /me failed) leaves a menu with nothing in it.
-    const onThemeChange = () => {
-      drawn = true
-    }
-    const onMenuError = () => {
-      if (!drawn) fallBack()
-    }
-    menu.addEventListener('ol-theme-change', onThemeChange)
-    menu.addEventListener('ol-chrome-error', onMenuError)
-    undo.push(() => {
-      menu.removeEventListener('ol-theme-change', onThemeChange)
-      menu.removeEventListener('ol-chrome-error', onMenuError)
-    })
     const slotObserver = new MutationObserver(() => {
       if (!slot.contains(menu)) fallBack()
     })
     slotObserver.observe(slot, { childList: true })
     // Disconnect before the slot is emptied on abort, so cleanup is not reported as a failure.
     undo.push(() => slotObserver.disconnect())
-    const chromeSrc = `${base}ol-chrome.js`
-    const onWindowError = (event) => {
-      if (event && event.filename === chromeSrc) fallBack()
-    }
-    window.addEventListener('error', onWindowError)
-    undo.push(() => window.removeEventListener('error', onWindowError))
 
     // 5. Philo hides its own menu.
+    resolved = true
     return { replaces: ['account-menu'] }
   }
 
