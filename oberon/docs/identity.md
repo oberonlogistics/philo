@@ -406,11 +406,12 @@ ask for them. Do not mark either *granted to all users*.
 
 | Role (suggested slug) | Holds | Give it to |
 |---|---|---|
-| Philo users (`philo-users`) | `philo:user` | Everyone who works leads in Philo |
-| Philo admins (`philo-admins`) | `philo:user`, `philo:admin` | Whoever configures Philo; at least the operator who owns `id=1` (§4) |
+| Philo users (`philo-users`) | `philo:user` | Everyone who uses Philo, admins included |
+| Philo admins (`philo-admins`) | `philo:user`, `philo:admin` | Also whoever configures Philo; at least the operator who owns `id=1` (§4) |
 
-Philo admits `philo:admin` alone as an admin, but holding both keeps a person in the Philo users role's
-meaning ("can use Philo") everywhere, for example as a Notify recipient (`notifications.md` §8).
+An admin holds both roles. The admins role carries `philo:user` too, so an admin's token is complete even from
+that role alone, but the Philo users role is the list of everyone who can use Philo: Notify posts to it
+(`notifications.md` §8).
 
 ### Public client
 
