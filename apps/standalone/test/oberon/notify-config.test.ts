@@ -44,7 +44,15 @@ describe('configuration (§12.3)', () => {
       as: 'philo',
       role: 'philo-users',
       appUrl: 'https://philo.example.com',
+      production: false,
     })
+  })
+
+  it('normalises the defaulted resource as it does the url: no trailing slash, lower-case host', () => {
+    const config = loadOberonNotifyConfig({ ...FULL, OL_NOTIFY_URL: 'https://Notify.Example.com/', NODE_ENV: 'production' }, PHILO)
+    expect(config?.url).toBe('https://notify.example.com')
+    expect(config?.resource).toBe('https://notify.example.com')
+    expect(config?.production).toBe(true)
   })
 
   it('takes an explicit resource, and the issuer from the external IdP', () => {

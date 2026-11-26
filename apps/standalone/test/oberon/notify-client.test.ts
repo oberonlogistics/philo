@@ -85,13 +85,24 @@ interface Rig {
 
 const rigs: Rig[] = []
 
-function rig(tuning: Partial<NotifyTuning> = {}): Rig {
+interface RigOptions {
+  config?: Partial<typeof CONFIG>
+  /** Every URL the module asked for, whatever its origin. */
+  requested?: string[]
+}
+
+function rig(tuning: Partial<NotifyTuning> = {}, options: RigOptions = {}): Rig {
+  const config = { ...CONFIG, ...options.config }
   const changes = feed()
-  const issuer = fakeIssuer()
+  const issuer = fakeIssuer(config.issuer)
   const notify = fakeNotify()
   const { log, lines } = captureLog()
-  const module = startOberonNotify(changes, CONFIG, {
-    fetch: route({ [ISSUER]: issuer.handler, [NOTIFY_URL]: notify.handler }),
+  const routed = route({ [config.issuer]: issuer.handler, [NOTIFY_URL]: notify.handler })
+  const module = startOberonNotify(changes, config, {
+    fetch: (input, init) => {
+      options.requested?.push(new Request(input, init).url)
+      return routed(input, init)
+    },
     log,
     ...tuning,
   })
@@ -198,6 +209,38 @@ describe('the token', () => {
     expect(r.lines.join('\n')).toMatch(/setup error/)
     expect(r.lines.join('\n')).toMatch(/invalid_client/)
   })
+
+  // The client secret goes only to the issuer's own origin, over https (http on loopback outside production).
+  for (const [label, endpoint, config] of [
+    ['an endpoint on another host', 'https://elsewhere.example.com/oauth2/token', {}],
+    ['an endpoint on another port', `${ISSUER}:8443/oauth2/token`, {}],
+    ['an http endpoint on the issuer host', 'http://auth.example.com/oauth2/token', {}],
+    ['a relative endpoint', '/oauth2/token', {}],
+    ['http on loopback in production', 'http://127.0.0.1:9000/oauth2/token', { issuer: 'http://127.0.0.1:9000', production: true }],
+    ['http on a non-loopback host outside production', 'http://auth.example.com/oauth2/token', { issuer: 'http://auth.example.com' }],
+  ] as const) {
+    it(`refuses ${label} as a setup error and never sends the secret`, async () => {
+      const requested: string[] = []
+      const r = rig({}, { config, requested })
+      r.issuer.tokenEndpoint = endpoint
+      r.changes.publish(created(1))
+      await settle(r)
+      expect(r.issuer.tokenRequests).toHaveLength(0)
+      expect(requested.filter((url) => !url.endsWith('/.well-known/openid-configuration'))).toEqual([])
+      expect(r.lines.join('\n')).toMatch(/setup error/)
+      expect(r.lines.join('\n')).toMatch(/discovery_mismatch/)
+    })
+  }
+
+  for (const host of ['127.0.0.1:9000', 'localhost:9000', '[::1]:9000']) {
+    it(`allows http on loopback (${host}) outside production`, async () => {
+      const r = rig({}, { config: { issuer: `http://${host}` } })
+      r.changes.publish(created(1))
+      await settle(r)
+      expect(r.issuer.tokenRequests).toHaveLength(1)
+      expect(summary(r.notify.calls)).toEqual(['post new'])
+    })
+  }
 })
 
 describe('posting', () => {

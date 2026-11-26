@@ -349,13 +349,32 @@ class TokenSource {
     if (answer.response.status !== 200) return tokenFailure(String(answer.response.status), 'discovery_failed')
     const json = parseJson(answer.text)
     const endpoint = json?.['token_endpoint']
-    if (json?.['issuer'] !== issuer || typeof endpoint !== 'string' || !/^https?:\/\//.test(endpoint)) {
+    // The client secret goes here, so only to the issuer's own origin.
+    if (json?.['issuer'] !== issuer || typeof endpoint !== 'string' || !trustedTokenEndpoint(endpoint, issuer, this.config.production)) {
       return { ...tokenFailure('200', 'discovery_mismatch'), setup: true }
     }
     this.#endpoint = endpoint
     return endpoint
   }
 }
+
+/**
+ * A token endpoint on the issuer's origin, over https; plain http only on a
+ * loopback host and never in production.
+ */
+function trustedTokenEndpoint(raw: string, issuer: string, production: boolean): boolean {
+  let url: URL
+  try {
+    url = new URL(raw)
+  } catch {
+    return false
+  }
+  if (url.origin !== new URL(issuer).origin || url.username !== '' || url.password !== '') return false
+  if (url.protocol === 'https:') return true
+  return url.protocol === 'http:' && !production && LOOPBACK.has(url.hostname)
+}
+
+const LOOPBACK = new Set(['localhost', '127.0.0.1', '[::1]'])
 
 function tokenFailure(status: string, code: string): Outcome & { ok: false } {
   return { ok: false, retry: true, setup: false, status: `token:${status}`, code }

@@ -24,6 +24,7 @@ export const CONFIG: OberonNotifyConfig = {
   as: 'philo',
   role: 'philo-users',
   appUrl: APP_URL,
+  production: false,
 }
 
 type Handler = (request: Request) => Response | Promise<Response>
@@ -50,6 +51,8 @@ export interface FakeIssuer {
   expiresIn: number
   /** Overrides the token endpoint's answer. */
   tokenScript: ((n: number) => Response | Promise<Response>) | undefined
+  /** Overrides the token endpoint discovery advertises. */
+  tokenEndpoint: string | undefined
 }
 
 export function fakeIssuer(issuer = ISSUER): FakeIssuer {
@@ -58,11 +61,12 @@ export function fakeIssuer(issuer = ISSUER): FakeIssuer {
     discoveryRequests: 0,
     expiresIn: 899,
     tokenScript: undefined,
+    tokenEndpoint: undefined,
     handler: async (request) => {
       const path = new URL(request.url).pathname
       if (request.method === 'GET' && path === '/.well-known/openid-configuration') {
         fake.discoveryRequests++
-        return Response.json({ issuer, token_endpoint: `${issuer}/oauth2/token` })
+        return Response.json({ issuer, token_endpoint: fake.tokenEndpoint ?? `${issuer}/oauth2/token` })
       }
       if (request.method === 'POST' && path === '/oauth2/token') {
         const form = Object.fromEntries(new URLSearchParams(await request.text()))

@@ -20,6 +20,8 @@ export interface OberonNotifyConfig {
   role: string
   /** Where the PWA is served: items link to a lead's page under it. */
   appUrl: string
+  /** NODE_ENV=production: plain http is refused everywhere, loopback too. */
+  production: boolean
 }
 
 /** The parts of Philo's own config this reads. */
@@ -60,7 +62,8 @@ export function loadOberonNotifyConfig(
   const invalid: string[] = []
 
   const url = value('OL_NOTIFY_URL')
-  const resource = value('OL_NOTIFY_RESOURCE') ?? url
+  // Defaulted from the url, it is normalised the same way: the origin, no trailing slash.
+  const resource = value('OL_NOTIFY_RESOURCE') ?? (url !== undefined && URL.canParse(url) ? new URL(url).origin : url)
   const issuer = value('OL_NOTIFY_ISSUER') ?? philo.externalIdp?.issuer
   const clientId = value('OL_NOTIFY_CLIENT_ID')
   const clientSecret = value('OL_NOTIFY_CLIENT_SECRET')
@@ -113,6 +116,7 @@ export function loadOberonNotifyConfig(
     as: as!,
     role: role!,
     appUrl: philo.appUrl,
+    production,
   }
 }
 
