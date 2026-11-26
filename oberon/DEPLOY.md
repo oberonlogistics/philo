@@ -214,7 +214,7 @@ PORT=<a free loopback port, not OL_PHILO_PORT>
 docker volume create "$SCRATCH"
 # Online backup from production into ./rehearsal/philo-rehearsal.db (DEPLOYMENT.md § Backup, online form;
 # reading production is the only thing this step does to it). Then:
-test "$SCRATCH" = philo-scratch || exit 1   # the guard before anything writes to a volume
+test "$SCRATCH" != "<production volume>" || exit 1   # the guard before anything writes to a volume
 docker run --rm -v "$SCRATCH":/data -v "$PWD/rehearsal":/backup alpine sh -c '
   cp /backup/philo-rehearsal.db /data/philo.db && chown -R 1000:1000 /data'
 ```
@@ -254,9 +254,10 @@ is told a submission went through. Pick a low-traffic hour.
       on the host answers `GET /oberon/philo-host.js` with 200 (a throwaway container on loopback, no data volume).
 - [ ] HUMAN: the stock rollback image `ghcr.io/philo-crm/philo:0.5.1@sha256:<digest>` and the current launch command
       are recorded.
-- [ ] **Which rollback you hold:** `git diff --stat v0.5.1 <tag> -- packages/server/drizzle`. Empty means R2 is only an
-      image swap. Otherwise list each migration and whether its reversal was rehearsed (§6). Today the only one is
-      `0013_user_roles` from `up/roles-authz`.
+- [ ] **Which rollback you hold:** `git diff --name-only v0.5.1 <tag> -- 'packages/server/drizzle/*.sql'`. Empty means
+      R2 is only an image swap. Otherwise list each migration, its reversal SQL, what it permits that stock wouldn't
+      restrict, and the date its reversal was rehearsed (§6). As of `up/roles-authz` (not yet merged, 2026-11), the
+      only one is `0013_user_roles`.
 - [ ] HUMAN: OL Auth registration is done (§3.3). **`philo-dev` is deleted** before `PHILO_OIDC_AGENT_CLIENT_IDS=*`
       goes live: with `*`, any client registered at OL Auth, including one with a loopback redirect, is admitted as
       an agent. The operator's Philo email equals their verified OL Auth email.
@@ -286,7 +287,7 @@ is told a submission went through. Pick a low-traffic hour.
    again, and retry — or roll back (§6).
 7. Turn off the intake hold and reload Caddy. Intake is open again.
 
-**Post-checks** (the window closes when all pass):
+**Post-checks** (HUMAN; they touch production and real data; the window closes when all pass):
 
 - [ ] `scripts/health-check.sh` passes, including `OK   Philo intake preflight from https://oberonlogistics.com`.
 - [ ] One test lead through the real website form shows the success message, appears in Philo, and the notification
@@ -306,14 +307,17 @@ after T0 (an erasure honoured after the cutover must not come back).
 
 **R1: environment only (the fast path, no data lost).** Use it when the problem is identity, chrome or Notify and the
 fork image itself works. Drop `-f oberon/deploy/compose.ol.yaml` (or the OL env file) and restart the **same image on
-the same volume**. The built-in IdP comes back with the same account and signing key (identity spec §4.4); the
+the same volume**. The built-in IdP comes back with the same account and signing key (identity spec §4.4), but the account is now
+bound to OL Auth, so the rehearsal must confirm built-in password sign-in still works for it; the
 migrations stay applied and the fork image understands them. Nothing is restored, so nothing is lost.
 
 **R2: back to the stock v0.5.1 image.** Use it only when the fork image itself fails. Stock v0.5.1 is not supported on
 a database a newer binary has migrated (DEPLOYMENT.md § Restore, last paragraph), and there are no down migrations.
-`0013_user_roles` only adds three nullable columns to `users` and fills `role`; it can be reversed by hand
+`0013_user_roles` only adds three nullable columns to `users` and fills `role`; its DDL can be reversed by hand
 (`ALTER TABLE users DROP COLUMN` ×3, then delete its row from `__drizzle_migrations`), but only if that was rehearsed
-on the copy. So:
+on the copy. **A migration's reversal must undo what it permits, not just its DDL.** A table or column that narrows
+access (roles, disabling, scopes) can't be reversed by dropping it alone: stock v0.5.1 treats every `users` row as a
+full operator, so each non-admin or disabled account's API keys, tokens and sessions would gain admin rights. So:
 
 1. Stop the new instance, so there is one writer.
 2. Take an online backup of the **new** database first, `philo-postcutover-<tag>.db`. Never delete it: it holds the
@@ -321,12 +325,16 @@ on the copy. So:
 3. Pick the data path:
    - **No migrations in the diff:** start the stock image (by digest) with the old launch command on the same volume.
      Done; nothing is lost.
-   - **Every migration has a rehearsed hand reversal:** apply the reversals to the volume, then start the stock image
-     on it. Nothing is lost.
+   - **Every migration has a rehearsed hand reversal, and `SELECT count(*) FROM users` is 1:** apply the reversals to
+     the volume, then start the stock image on it. Nothing is lost. If there are other accounts, first revoke every
+     credential of each account other than `id=1` (delete its rows in `api_keys`, `sessions`, `access_tokens`,
+     `refresh_tokens` and `authorization_codes`), rehearsed like the schema reversal. If that can't be done, take the
+     next path.
    - **Otherwise:** restore `philo-precutover-<tag>.db` and both key files (DEPLOYMENT.md § Restoring the online
      backup), start the stock image, then **carry over** from `philo-postcutover-<tag>.db` (read with
      `sqlite3 -readonly`): leads with `created_at > T0`, with their `lead_events` and attachments; notes and stage
-     moves on older leads (`lead_events` with `created_at > T0`); and **deletions** (lead ids present in the
+     moves on older leads (`lead_events` with `created_at > T0`); field edits that write no event (leads with
+     `updated_at > T0` and `created_at <= T0`: compare fields); and **deletions** (lead ids present in the
      pre-cutover backup but missing in the post-cutover one, deleted again on the restored instance). Re-enter them
      through the UI or `/api/v1`. There is no merge tool.
 4. Run the post-checks again: `scripts/health-check.sh`, one test lead, sign-in, a lead's attachment.
@@ -346,7 +354,7 @@ Keep both named backups until the next release has run cleanly; then delete them
   `:latest` and semver images into our package (§2.2).
 - `GET /version` reports the upstream version only, so `ol-v0.5.1-1` and `-2` both say `0.5.1`. The pinned image tag
   shows which fork release runs.
-- Upgrading is DEPLOYMENT.md § Upgrading in this layout: back up to a named file, set the new tag and digest in
+- Upgrading (HUMAN) is DEPLOYMENT.md § Upgrading in this layout: back up to a named file, set the new tag and digest in
   `OL_PHILO_IMAGE`, bump `?v=` in `PHILO_WEB_HOST_SCRIPT_URL`, `up -d`. Rolling back without a migration means setting
   the previous tag and digest; with one, §6 R2 applies.
 
