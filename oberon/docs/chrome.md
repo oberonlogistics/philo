@@ -1,6 +1,8 @@
 # Shared chrome in Philo: integration spec
 
-Status: proposal (design only, no code yet). Branch `ol/spec-chrome`.
+Status: proposal, revised 2026-11-26. UP-1 (the CSP) is in progress as `up/pwa-csp`; UP-2 to UP-4 and the Oberon
+wiring are design only. The landing order of these PRs with the identity and notification work is in
+[`identity.md` §2.1](identity.md#21-landing-order-for-all-three-fork-specs). Branch `ol/spec-chrome`.
 
 **Goal.** Every signed-in Philo page shows the shared Oberon Logistics chrome at the right of its top bar:
 `<ol-notifications>` (the shared bell), `<ol-app-switcher current="…">` and `<ol-account-menu>`. The chrome loads at
@@ -18,8 +20,9 @@ fonts and icons always load from OL Auth at runtime (`oberon/AGENTS.md`, "This r
 
 Sources read: common `DESIGN.md` §2.2, §5–§8 and `packages/chrome/` (element API); OL Auth `docs/integration.md` §4
 ("`prompt` and sessions") and §9 ("The shared chrome"); Notify `docs/SPEC.md` §2; Handbook `packages/pwa/src/chrome.ts`,
-`session.ts` and `packages/server/src/pwa-document.ts`; Philo as cited below. Upstream `philo-crm/philo` has no issue or
-PR about a CSP, theming, embedding, host chrome or extra tokens (checked 2026-11-26), so nothing overlaps.
+`session.ts` and `packages/server/src/pwa-document.ts`; Philo as cited below. Upstream `philo-crm/philo` had no issue or
+PR about a CSP, theming, embedding, host chrome or extra tokens before this work (checked 2026-11-26). The SDK's
+`resource` and `prompt` come from philo-crm/philo#61 (identity ID-U3).
 
 ---
 
@@ -63,14 +66,17 @@ PR about a CSP, theming, embedding, host chrome or extra tokens (checked 2026-11
 - **ADR-0006 already counts on a CSP.** It keeps the refresh token in `localStorage` and says "the CSP and the absence of
   third-party script are what bound it" (`docs/adr/0006-headless-server-sdk-clients.md:108-111`). That CSP does not
   exist. Both halves of that sentence matter to this spec (§2.1, §2.3).
-- The app has no `style={…}` attributes (0 matches in `apps/web/src`), so `style-src 'self'` is reachable.
+- The app has no `style={…}` attributes in its DOM (the one `style=` match, `IntakeDetails.tsx:13`, is text in an
+  embed snippet), so `style-src 'self'` is reachable. The exception is the email-template preview
+  (`EmailTemplates.tsx:248`), an `<iframe srcDoc>` that would inherit the shell's CSP and lose a template's inline
+  styles and images. UP-1 handles it.
 
 ### 1.4 Tokens
 
 - `apps/web/src/auth.ts:73-79`: `GET /api/v1/auth/config` → OIDC discovery → `TokenSession` (`@philo/sdk`). The access
   token stays in memory and the refresh token goes in `localStorage["philo.refresh-token"]`.
 - `packages/sdk/src/oidc.ts:94-110` `createAuthorizationRequest` takes only `scope`. It has **no `resource`
-  (RFC 8707) and no `prompt`**, and OL Auth needs `resource` to set a token's audience.
+  (RFC 8707) and no `prompt`**, and OL Auth needs `resource` to set a token's audience. philo-crm/philo#61 adds both.
 - The sign-in config comes from `packages/server/src/app.ts:101-106`. With an external IdP the scope is fixed at
   `openid email profile` (the identity spec, `ol/spec-auth`, changes that).
 - There is one callback path, `/auth/callback` (`auth.ts:25`, `packages/server/src/oauth/first-party.ts:13`), and
@@ -89,46 +95,47 @@ PR about a CSP, theming, embedding, host chrome or extra tokens (checked 2026-11
 
 ## 2. Generic upstream seams (`up/` PRs)
 
-There are four PRs, in this order. Each is described as upstream would read it: no Oberon, no OL service names,
+There are four PRs, in this order (and in the combined order of
+[`identity.md` §2.1](identity.md#21-landing-order-for-all-three-fork-specs)). Each is described as upstream would read it: no Oberon, no OL service names,
 `example.com` only. "Env" and "DB" follow `DEPLOYMENT.md` "Configuration": anything a process needs before it can serve,
 or anything that is security policy, is env. Here that is all of it: a script URL is code execution, and CSP origins are
 security policy. **Nothing here goes in the settings DB.**
 
-### UP-1 `feat(standalone): a Content-Security-Policy for the PWA shell`
+### UP-1 `feat(standalone): a Content-Security-Policy for the PWA shell` (`up/pwa-csp`, in progress)
 
 This implements the CSP that ADR-0006 already relies on, so it needs **no new ADR**. It is useful by itself, and the
 other PRs extend it.
 
 - Where: `apps/standalone` adds a header middleware next to the `Cache-Control` one. It applies to every PWA response
-  (shell, client routes, `/sw.js`, `/manifest.webmanifest`), never to server or MCP paths, and never over a header
-  a handler already set (the same rule as `app.ts:74-77`). The policy is built once at startup from config and passed in
-  as `StandaloneOptions.contentSecurityPolicy`.
-- Default policy (built-in IdP):
+  (shell, client routes, `/sw.js`, `/manifest.webmanifest`, `/assets/*`), never to server or MCP paths, and never over a
+  header a handler already set (the same rule as `app.ts:74-77`).
+- Default policy:
 
   ```
-  default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self';
-  connect-src 'self'; worker-src 'self'; manifest-src 'self'; frame-src 'none'; object-src 'none';
+  default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self';
+  connect-src 'self'; worker-src 'self'; manifest-src 'self'; frame-src 'self'; object-src 'none';
   base-uri 'self'; form-action 'self'; frame-ancestors 'none'
   ```
 
-  With `PHILO_OIDC_ISSUER` set, the issuer's origin is added to `connect-src` (discovery and the token endpoint). The
-  PR also adds `X-Content-Type-Options: nosniff` and `Referrer-Policy: strict-origin-when-cross-origin`.
-  `img-src data:` is there because Vite inlines small assets; drop it if the build shows none.
+  With `PHILO_OIDC_ISSUER` set, the issuer's origin is added to `connect-src` (discovery and the token endpoint).
+  `PHILO_WEB_CONNECT_ORIGINS` (comma-separated `https:` origins) adds more to `connect-src`; this PR owns it. It also
+  adds `X-Content-Type-Options: nosniff` and `Referrer-Policy: strict-origin-when-cross-origin`.
+- **The email-template preview** moves to a page the server serves, `/api/email-preview`, with a policy of its own, and
+  the PWA frames it (`frame-src 'self'`). A template's inline styles and images keep rendering, which a `srcdoc` frame
+  under the shell's policy would lose.
 - `DEPLOYMENT.md`: a "Content-Security-Policy" section with the policy to copy when the PWA is served by another host.
 - Tests (`apps/standalone/test`): the shell, a client route and `/sw.js` carry the policy, while `/api/*`, `/oauth/*`,
-  `/mcp` and the attachment download keep their own headers. With an external issuer, its origin is in `connect-src`.
-  `apps/web/test/build-plugin.test.ts` or a new build test checks that `dist/index.html` has no inline `<script>` or
-  `style` attribute, so the policy cannot silently break the app. CI's container-boot step checks that the header is
-  present.
+  `/mcp`, the attachment download and the email preview keep their own headers. With an external issuer, its origin is
+  in `connect-src`. A styled template still previews styled. A build test checks that `dist/index.html` has no inline
+  `<script>` or `style` attribute, so the policy cannot silently break the app.
 
 ### UP-2 `feat(sdk,web): ask the IdP for an extra token in a hidden frame`
 
-This is generic RFC 8707 support plus silent authorization. **The identity spec probably needs the SDK half (`resource`
-on the sign-in request) too.** Whichever PR lands first owns the `resource` and `prompt` options, and the other one
-rebases.
+This is silent authorization for a second audience. **It depends on philo-crm/philo#61** (identity ID-U3), which owns
+the SDK half: `resource?: readonly string[]` and `prompt?: string` on `createAuthorizationRequest`, `resource` on
+`exchangeCode`, and the RFC 9207 `iss` check. UP-2 adds no SDK option of its own. It also needs UP-1 (the CSP it
+extends).
 
-- SDK (`packages/sdk/src/oidc.ts`): `AuthorizationRequestOptions` gains `resource?: string | string[]` (one
-  `resource` parameter each) and `prompt?: string`. `exchangeCode` passes `resource` through. Unit tests check the URL.
 - Web (`apps/web/src/extra-token.ts`, new): `getExtraToken({ resource, scope, prompt? }): Promise<string | null>`.
   - It builds an authorization request with the PWA's own client id and its one redirect URI (`/auth/callback`), so the
     operator registers nothing new. It opens it in a hidden `<iframe>` and keeps the PKCE verifier and state in memory.
@@ -136,21 +143,22 @@ rebases.
     `{ type: "philo:silent-callback", url }` to `window.parent` with the target origin set to its own origin, and stops
     before React mounts. That check goes in `main.tsx` ahead of `createRoot`, so `App.tsx`'s full-page callback logic
     never runs in the frame.
-  - The parent checks the message origin and the state, exchanges the code, removes the frame, and caches the access
-    token in memory for each `(resource, scope)` until 30 s before `exp`. A refresh token the IdP returns is
+  - The parent checks the message origin, that `event.source` is the frame's `contentWindow`, and the state. It
+    exchanges the code through the SDK's `exchangeCode`, so the `iss` check applies (and the nonce check, when an ID
+    token comes back). It removes the frame and caches the access token in memory for each `(resource, scope)` until 30 s before `exp`. A refresh token the IdP returns is
     **discarded**: it would widen what `localStorage` holds.
   - It returns `null`, never throws, on an OAuth error, a 10 s timeout (the IdP wanted to show a page), the built-in IdP
     (which has only Philo's own resource), or no external IdP. A refusal is not retried until the next sign-in. Only one
     request per key runs at a time.
   - It omits `prompt` by default, and the caller may pass one. Some IdPs answer a hidden first request only *without*
     `prompt=none`, and others only *with* it, so the caller picks.
-- UP-1's CSP gains `frame-src 'self' <issuer origin>` in external-IdP mode. `/auth/callback` alone gets
+- UP-1's `frame-src 'self'` gains the issuer's origin in external-IdP mode. `/auth/callback` alone gets
   `frame-ancestors 'self'`, and every other path keeps `'none'`.
 - `DEPLOYMENT.md`: a hidden frame needs the IdP's session cookie, so it works only when the IdP and the PWA are
   **same-site**, or the browser allows third-party cookies. The PWA keeps working without it, and the extra token is
   just `null`.
-- Tests: an SDK URL test with `resource` and `prompt`. Web tests with jsdom and a fake frame: the happy path, a state
-  mismatch, a wrong-origin message, the timeout giving `null`, the cache reused until near `exp`, concurrent callers
+- Tests: web tests with jsdom and a fake frame: the happy path, a state mismatch, a wrong-origin message, a message
+  from another window, an `iss` mismatch, the timeout giving `null`, the cache reused until near `exp`, concurrent callers
   sharing one request, no retry after a refusal, and the refresh token not stored. A `main.tsx` test checks that a framed
   callback posts and does not render. A standalone test checks `frame-ancestors` per path.
 - ADR: none by itself, because no token goes to anyone else yet. It is useless without UP-3, but it is small and easy to
@@ -158,8 +166,8 @@ rebases.
 
 ### UP-3 `feat(web): an operator host script with a top-bar slot`
 
-**This contests ADR-0006** ("the absence of third-party script"), so the PR carries **ADR-0012 "Operator host script in
-the PWA"**. The ADR argues:
+**This contests ADR-0006** ("the absence of third-party script"), so the PR carries **ADR-0013 "Operator host script in
+the PWA"** (ADR-0012 is several users with roles, philo-crm/philo#66). The ADR argues:
 
 - It is opt-in. With the variable unset, nothing loads and the default CSP stays `'self'`.
 - The operator who sets it trusts that script as much as Philo's own code. It runs in the page and could read
@@ -209,7 +217,7 @@ interface PhiloHostContext {
   signOut(): void
   /** Philo's own theme store (theme.ts setTheme): writes philo.theme, data-theme and theme-color. */
   setTheme(theme: 'light' | 'dark' | 'system'): void
-  /** Philo's own account-menu entries, for a host that replaces the account menu. */
+  /** Philo's own account-menu entries for this person's role (Server settings only for an admin, ADR-0012). */
   accountItems: ReadonlyArray<{ label: string; path: string }>
   /** Aborted when the signed-in shell unmounts (sign-out, session expired). */
   signal: AbortSignal
@@ -236,21 +244,22 @@ Behaviour:
   on the signed-out or callback screens. Server: `GET /api/v1/web/config` is public, and a bad
   `PHILO_WEB_HOST_CONFIG` JSON or URL is a startup `ConfigError`, not a silent default.
 
-### UP-4 `feat(standalone): extra CSP origins for a host script`
+### UP-4 `feat(standalone): extra CSP sources for a host script`
 
 This could fold into UP-3. It is kept apart because it is pure security config and a reviewer should see it alone.
+`PHILO_WEB_CONNECT_ORIGINS` is already in UP-1, so only one variable is left.
 
 | Variable | Default | Added to |
 |---|---|---|
-| `PHILO_WEB_ASSET_ORIGINS` | empty | `script-src`, `style-src`, `font-src`, `img-src` |
-| `PHILO_WEB_CONNECT_ORIGINS` | empty | `connect-src` |
+| `PHILO_WEB_ASSET_ORIGINS` | empty | `script-src`, `style-src`, `font-src` as given; `img-src` as the entry's origin |
 
-- Both are comma-separated origins. Each entry must parse as an `https:` origin (or `http://localhost` and
-  `http://127.0.0.1` for development), with no path, wildcard or keyword (`'unsafe-inline'`, `*`, `data:`). Anything
-  else is a startup `ConfigError`. The origin of an absolute `PHILO_WEB_HOST_SCRIPT_URL` is added to `script-src`
-  automatically.
-- Tests: the values reach the right directives, a keyword or wildcard is refused at startup, and an unset variable
-  leaves UP-1's policy unchanged.
+- Comma-separated. Each entry is an `https:` origin **plus an optional path prefix** ending in `/` (or
+  `http://localhost` and `http://127.0.0.1` for development), with no query, wildcard or keyword (`'unsafe-inline'`,
+  `*`, `data:`). Anything else is a startup `ConfigError`. A path prefix keeps `script-src` off the rest of that origin,
+  for example an IdP's upload storage on the same host; ADR-0006 counts on this CSP to keep the `localStorage` refresh
+  token out of reach. The origin of an absolute `PHILO_WEB_HOST_SCRIPT_URL` is added to `script-src` automatically.
+- Tests: the values reach the right directives, a path prefix stays a path in `script-src` and becomes the origin in
+  `img-src`, a keyword or wildcard is refused at startup, and an unset variable leaves UP-1's policy unchanged.
 
 **Not proposed.** An operator brand name or logo seam: the wordmark stays *Philo*, which is the app's tile name too.
 A theme stylesheet URL: the host script can add a `<link>` itself, and one fewer variable is better. Both can come
@@ -260,8 +269,10 @@ later if another operator asks for them.
 
 ## 3. Oberon wiring (`ol/`)
 
-All of it lives in new files under `oberon/web/` and in environment values. **No upstream file changes**, so the table
-in `oberon/AGENTS.md` doesn't grow.
+All of it lives in new files under `oberon/` and in environment values. **No upstream file changes**, so the table
+in `oberon/AGENTS.md` doesn't grow. The fork builds its own image from a new `oberon/Dockerfile` (proposed here, shared
+with the notifications module), which runs upstream's build and adds the Oberon files. Upstream's `Dockerfile` stays
+unedited.
 
 ### 3.1 Files
 
@@ -270,7 +281,7 @@ in `oberon/AGENTS.md` doesn't grow.
 | `oberon/web/philo-host.js` | The host script (§3.2). Framework-free, a classic script with no build step, about 150 lines. |
 | `oberon/web/philo-ol.css` | Maps Philo's CSS variables onto `--ol-*` tokens (§4). |
 | `oberon/web/test/*.test.ts` | Tests against a stub chrome (§6). Run by `oberon/scripts/verify.sh`. |
-| `oberon/DEPLOY.md` (existing plan) | The image copies `oberon/web/*.js` and `*.css` into `apps/web/dist/oberon/` so they're served same-origin at `/oberon/…`. |
+| `oberon/Dockerfile` | Copies `oberon/web/*.js` and `*.css` into `apps/web/dist/oberon/` so they're served same-origin at `/oberon/…`. `oberon/DEPLOY.md`, not yet written, carries the env. |
 
 ### 3.2 `philo-host.js`
 
@@ -287,16 +298,16 @@ It does the following, in order:
 2. Fills `ctx.slot` with:
    - `<ol-notifications>`, and only when `ctx.config.notifyUrl` is set.
    - `<ol-app-switcher current="${ctx.clientId}">`. The tile's client id is Philo's OL Auth public client, the same value
-     as `PHILO_OIDC_CLIENT_ID`. `ol/spec-auth` names it, probably `philo`.
+     as `PHILO_OIDC_CLIENT_ID`: `philo` (`identity.md` §5).
    - `<ol-account-menu>` with one `<a slot="item">` for each of `ctx.accountItems`. A click calls `preventDefault()` and
      then `ctx.navigate(path)`. It gets `compact` below 760 px through a `matchMedia` listener.
 3. Calls `OLChrome.configure({ notifyUrl, getToken, onSignOut })`:
    - `getToken({audience})`: `"auth"` → `ctx.getToken({ resource: \`${ctx.issuer}/api\`, scope: "auth:apps auth:account" })`.
      `"notify"` → `ctx.getToken({ resource: ctx.config.notifyResource, scope: "notify:read" })`. Anything else → `null`.
      No `prompt`: OL Auth answers the first request for a new audience only without it (integration.md §4). Handbook
-     does the same (`session.ts` `secondTokenArgs`). The brief's "`prompt=none`" is wrong for the first request.
-   - `onSignOut`: `ctx.signOut()`. Whether Philo's sign-out also ends the OL Auth session is for `ol/spec-auth` to
-     decide (§7, question 3).
+     does the same (`session.ts` `secondTokenArgs`). `prompt=none` is wrong for the first request.
+   - `onSignOut`: `ctx.signOut()`. Philo's sign-out also ends the OL Auth session (`identity.md` ID-U7), so the
+     chrome's menu and Philo's do the same thing.
 4. **Theme sync** (§4): it watches `document.documentElement`'s `data-theme` with a `MutationObserver` and calls
    `ctx.setTheme(…)` when the value differs from the last one it saw. That guard matters: `setTheme` writes the same
    attribute, and without it the two would loop.
@@ -307,21 +318,23 @@ It does the following, in order:
 ```sh
 PHILO_WEB_HOST_SCRIPT_URL=/oberon/philo-host.js
 PHILO_WEB_HOST_CONFIG='{"notifyUrl":"https://notify.oberonlogistics.com","notifyResource":"https://notify.oberonlogistics.com"}'
-PHILO_WEB_ASSET_ORIGINS=https://auth.oberonlogistics.com
-PHILO_WEB_CONNECT_ORIGINS=https://auth.oberonlogistics.com,https://notify.oberonlogistics.com
+PHILO_WEB_ASSET_ORIGINS=https://auth.oberonlogistics.com/chrome/v1/
+PHILO_WEB_CONNECT_ORIGINS=https://notify.oberonlogistics.com
 ```
 
 - `PHILO_OIDC_ISSUER=https://auth.oberonlogistics.com` comes from the identity spec. UP-1 and UP-2 derive the issuer's
-  `connect-src` and `frame-src` entries from it.
+  `connect-src` and `frame-src` entries from it, so the issuer is not repeated in `PHILO_WEB_CONNECT_ORIGINS`.
+- `script-src`, `style-src` and `font-src` allow only `https://auth.oberonlogistics.com/chrome/v1/` (the chrome, the
+  tokens and the fonts). `img-src` gets the bare origin, for tile icons served from the issuer.
 - Notify's production address is `https://notify.oberonlogistics.com`, but Notify's own `SPEC.md` §2 marks it
   "**TODO**: confirm". Its resource identifier is the same string there.
-- The resulting policy matches DESIGN §5.2's "CSP" line: the issuer in `script-src`, `connect-src` and `img-src`, plus
-  Notify in `connect-src`. It also adds `style-src` and `font-src` for `tokens.css` and `fonts.css`, which §5.2 leaves
+- The resulting policy meets DESIGN §5.2's "CSP" line: the issuer (path-scoped) in `script-src`, the issuer in
+  `connect-src` and `img-src`, plus Notify in `connect-src`. It also adds `style-src` and `font-src` for `tokens.css` and `fonts.css`, which §5.2 leaves
   out because it assumes `'self'`-hosted tokens.
 
 ### 3.4 What the chrome needs from the auth work (`ol/spec-auth`)
 
-1. External-IdP sign-in through OL Auth, with `resource` on the request (shared with UP-2's SDK half).
+1. External-IdP sign-in through OL Auth, with `resource` on the request (philo-crm/philo#61, which UP-2 builds on).
 2. The OL Auth public client is **first-party**, and it holds `auth:apps`, `auth:account` and `notify:read`, with the
    audiences `https://auth.oberonlogistics.com/api` and Notify's identifier. Those audiences are for the extra tokens,
    **never the sign-in token** (Handbook `deployment.md`, "Scopes"/"Audiences"/"First-party").
@@ -441,8 +454,8 @@ Run all of it from `oberon/scripts/verify.sh`. Add a step: `npx vitest run --roo
    change, generic enough to justify) or dropping the bell on phones. Decide after the §6.3 check.
 2. **Toasts for new leads.** If `ol/spec-notify` puts new leads in the shared feed, `toast-new` would duplicate Philo's
    own push or in-app notification. Recommendation: leave `toast-new` off in Philo.
-3. **Sign-out scope.** Does the account menu's *Sign out* end only Philo's session (`ctx.signOut`), or also the OL Auth
-   session (`${issuer}/sign-out`, the chrome's default)? `ol/spec-auth` should decide, and the host script follows.
+3. ~~**Sign-out scope.**~~ Closed: Philo's sign-out ends the OL Auth session too (`identity.md` ID-U7), and the host
+   script calls it.
 4. **Tile tint and glyph** for Philo (§3.4 item 3): the orchestrator picks them.
 5. **Notify's production URL**: confirm it in `oberonlogistics-notify` before setting `PHILO_WEB_HOST_CONFIG`.
 6. **Upstream appetite for UP-3.** The maintainer may not want a script hook at all. If they refuse, the fallback is an
