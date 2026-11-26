@@ -81,7 +81,7 @@ describe('bearer guard', () => {
       expect((await testApp.app.request(path, as(authorization))).status, path).toBe(200)
     }
     const session = await testApp.app.request('/api/v1/auth/session', as(authorization))
-    expect(await session.json()).toEqual({ user: { id: 1, email: ADMIN_EMAIL, name: 'Admin' } })
+    expect(await session.json()).toEqual({ user: { id: 1, email: ADMIN_EMAIL, name: 'Admin', role: 'admin' } })
   })
 
   it('refuses a token whose user is gone', async () => {
@@ -113,7 +113,7 @@ describe('GET /api/v1/auth/session', () => {
     const testApp = createTestApp()
     const authorization = await setupAdmin(testApp)
     const res = await testApp.app.request('/api/v1/auth/session', as(authorization))
-    expect(await res.json()).toEqual({ user: { id: 1, email: ADMIN_EMAIL, name: 'Admin' } })
+    expect(await res.json()).toEqual({ user: { id: 1, email: ADMIN_EMAIL, name: 'Admin', role: 'admin' } })
   })
 })
 
@@ -122,14 +122,16 @@ describe('GET /api/v1/auth/principal', () => {
     const testApp = createTestApp()
     const person = await setupAdmin(testApp)
     const { authorization, clientId } = await agentAuth(testApp, 1)
-    const user = { id: 1, email: ADMIN_EMAIL, name: 'Admin' }
+    const user = { id: 1, email: ADMIN_EMAIL, name: 'Admin', role: 'admin' as const }
 
     expect(await (await testApp.app.request('/api/v1/auth/principal', as(person))).json()).toEqual({
       user,
+      role: 'admin',
       actor: 'user:1',
     })
     expect(await (await testApp.app.request('/api/v1/auth/principal', as(authorization))).json()).toEqual({
       user,
+      role: 'admin',
       actor: `oauth:${clientId}`,
     })
   })
@@ -253,7 +255,7 @@ describe('external IdP', () => {
 
     const res = await testApp.app.request('/api/v1/auth/session', as(`Bearer ${jwt}`))
     expect(res.status).toBe(200)
-    expect(await res.json()).toEqual({ user: { id: 1, email: 'owner@example.com', name: 'Owner' } })
+    expect(await res.json()).toEqual({ user: { id: 1, email: 'owner@example.com', name: 'Owner', role: 'admin' } })
   })
 
   it('refuses a second person once the instance has its operator', async () => {
@@ -368,7 +370,8 @@ describe('external IdP', () => {
       const jwt = await token(BARE)
 
       const res = await testApp.app.request('/api/v1/auth/session', as(`Bearer ${jwt}`))
-      expect(await res.json()).toEqual({ user: { id: 1, email: 'owner@example.com', name: 'Owner' } })
+      // The first account runs the instance — ADR-0012 — however its email was vouched for.
+      expect(await res.json()).toEqual({ user: { id: 1, email: 'owner@example.com', name: 'Owner', role: 'admin' } })
       expect(fetchSpy).toHaveBeenCalledTimes(1)
       const [url, init] = fetchSpy.mock.calls[0]!
       expect(String(url)).toBe(USERINFO)
@@ -385,6 +388,24 @@ describe('external IdP', () => {
       expect(await res.json()).toMatchObject({ user: { id: 1, email: ADMIN_EMAIL } })
       const [row] = testApp.db.select().from(users).all()
       expect(row?.externalSubject).toBe(`${ISSUER} external-sub`)
+    })
+
+    it.each([
+      ['a deactivated account', { disabledAt: new Date() }],
+      ['an account with no role', { role: null }],
+    ] as const)('binds %s by the email userinfo verifies, and still refuses it', async (_label, change) => {
+      const testApp = createTestApp({ externalIdp: idp })
+      createFirstUser(testApp.db, { email: ADMIN_EMAIL, passwordHash: 'unused', name: 'Admin' })
+      testApp.db.update(users).set(change).run()
+      userinfo({ sub: 'external-sub', email: ADMIN_EMAIL, email_verified: true })
+
+      expect((await testApp.app.request('/api/v1/leads', as(`Bearer ${await token(BARE)}`))).status).toBe(401)
+      const [row] = testApp.db.select().from(users).all()
+      expect(row?.externalSubject).toBe(`${ISSUER} external-sub`)
+      // Bound now, so the next request takes the bound path — refused there too.
+      fetchSpy.mockClear()
+      expect((await testApp.app.request('/api/v1/leads', as(`Bearer ${await token(BARE)}`))).status).toBe(401)
+      expect(fetchSpy).not.toHaveBeenCalled()
     })
 
     it('never asks userinfo again once the subject is bound', async () => {

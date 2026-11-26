@@ -6,6 +6,7 @@ import type { Db } from '../db/index.ts'
 import { users } from '../db/schema.ts'
 import { normalizeEmail } from './credentials.ts'
 import { hashPassword } from './password.ts'
+import { ACCOUNT_COLUMNS, ROLES_ON_ACCOUNTS, sessionUserOf, type AccountRow } from './access.ts'
 import type { SessionUser } from './session.ts'
 
 /**
@@ -197,7 +198,9 @@ async function readCapped(res: Response, limit: number): Promise<string | undefi
   return Buffer.concat(chunks).toString('utf8')
 }
 
-const USER_COLUMNS = { id: users.id, email: users.email, name: users.name }
+/** Roles are not read from scopes yet, so the stored role decides, as with the built-in IdP. */
+const USER_COLUMNS = ACCOUNT_COLUMNS
+const access = (row: Parameters<typeof sessionUserOf>[0]) => sessionUserOf(row, ROLES_ON_ACCOUNTS)
 
 /** Positive proof only: a provider that says nothing about the address has not vouched for it. */
 function verifiedEmail(claims: JWTPayload): string | undefined {
@@ -231,10 +234,12 @@ async function findOrProvisionUser(
   claims: JWTPayload,
   userinfo: () => Promise<JWTPayload | undefined>,
 ): Promise<SessionUser | undefined> {
-  const boundTo = (q: Pick<Db, 'select'>): SessionUser | undefined =>
+  // Every path below hands back an account row, and every row goes through
+  // the has-access rule before it acts for anyone — ADR-0012.
+  const boundTo = (q: Pick<Db, 'select'>): AccountRow | undefined =>
     q.select(USER_COLUMNS).from(users).where(eq(users.externalSubject, subject)).all()[0]
   const bound = boundTo(db)
-  if (bound !== undefined) return bound
+  if (bound !== undefined) return access(bound)
 
   // Nothing left to bind: refuse before asking the provider anything, so a
   // second person's every request is not also a userinfo call.
@@ -260,7 +265,7 @@ async function findOrProvisionUser(
     // Lost a race to a parallel request carrying this same subject (another
     // tab, an agent): that request bound the account, so this one shares it.
     // A different subject still finds nothing and is refused.
-    return unbound ?? boundTo(db)
+    return access(unbound ?? boundTo(db))
   }
 
   // A password nobody knows: the built-in sign-in is switched off in this mode,
@@ -271,12 +276,14 @@ async function findOrProvisionUser(
   return db.transaction((tx) => {
     // Lost a race with another first token: whoever won is the operator. If
     // the winner carried this same subject, this request is that operator too.
-    if (tx.select({ id: users.id }).from(users).limit(1).all().length > 0) return boundTo(tx)
+    if (tx.select({ id: users.id }).from(users).limit(1).all().length > 0) return access(boundTo(tx))
     const [created] = tx
       .insert(users)
-      .values({ email, passwordHash, name, externalSubject: subject })
+      // Without the role scopes there is one account, and it runs the
+      // instance — ADR-0012.
+      .values({ email, passwordHash, name, externalSubject: subject, role: 'admin', roleConfirmedAt: new Date() })
       .returning(USER_COLUMNS)
       .all()
-    return created
+    return access(created)
   })
 }
