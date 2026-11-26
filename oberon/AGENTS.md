@@ -54,6 +54,7 @@ a future merge conflict, so record each one in the table below.
 | File | Why | Can an upstream extension point remove it? |
 |---|---|---|
 | `AGENTS.md`, `CLAUDE.md` | The pointer to this guide, two lines at the top | No; keep it to those two lines |
+| `apps/standalone/src/index.ts` | Starts the OL Notify module (`apps/standalone/src/oberon/notify.ts`, [`docs/notifications.md`](docs/notifications.md) §10): one import and one call after `bootServer` | It already has: philo-crm/philo#64 (`bootServer` returns `changes`) is that extension point, so `boot.ts` is not edited. Only the import and the one call remain; keep it to those two lines |
 
 ## Worktrees
 
@@ -157,10 +158,13 @@ not part of the fork merge bar.
   `oberon/web/*.js` and `*.css`, served at `/oberon/<file>`), smoke-tests it, and pushes only
   `ghcr.io/oberonlogistics/philo:<tag>`, printing the digest in the job summary. Re-run it for an existing tag with
   `workflow_dispatch`. Upstream's `docker-publish.yml` still publishes stock `:edge`, `:latest` and semver tags to
-  the same package, so pin production by `ol-v*` tag and digest. Neither file edits an upstream file. Locally:
-  `docker build -t philo-upstream:local . && docker build -f oberon/Dockerfile .`
-- Deployment is not decided yet. Production at `https://philo.oberonlogistics.com` runs the stock
-  upstream image on its own host. Write the plan in `oberon/DEPLOY.md` before switching anything.
+  the same package, so pin production by `ol-v*` tag and digest. It refuses a tag whose commit isn't on
+  `main`. Neither file edits an upstream file. Locally:
+  `docker build -t philo-upstream:local . && docker build -f oberon/Dockerfile --build-arg PHILO_BASE=philo-upstream:local .`
+  See [`DEPLOY.md`](DEPLOY.md) §2.
+- Production at `https://philo.oberonlogistics.com` runs the stock upstream image on its own host.
+  The plan to cut it over to the fork image (same host) is [`DEPLOY.md`](DEPLOY.md). It has open decisions, so change nothing in
+  production until a human has settled them.
 
 ## Integration contracts (sibling repositories)
 
