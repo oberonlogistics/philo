@@ -54,6 +54,7 @@ a future merge conflict, so record each one in the table below.
 | File | Why | Can an upstream extension point remove it? |
 |---|---|---|
 | `AGENTS.md`, `CLAUDE.md` | The pointer to this guide, two lines at the top | No; keep it to those two lines |
+| `apps/standalone/src/index.ts` | Starts the OL Notify module (`apps/standalone/src/oberon/notify.ts`, [`docs/notifications.md`](docs/notifications.md) §10): one import and one call after `bootServer` | It already has: philo-crm/philo#64 (`bootServer` returns `changes`) is that extension point, so `boot.ts` is not edited. Only the import and the one call remain; keep it to those two lines |
 
 ## Worktrees
 
