@@ -38,33 +38,48 @@ runs those steps. Agents prepare the commands and never run them.
 
 The PWA has to serve `oberon/web/*` from its own origin at `/oberon/…`, for the chrome's host script (chrome spec
 §3.1). The standalone app already serves any file under `apps/web/dist` (`apps/standalone/src/app.ts`, `serveStatic`),
-so the image only needs to copy the files in. Add a new file and leave upstream's `Dockerfile` alone:
+so the image only needs to copy the files in. [`oberon/Dockerfile`](Dockerfile) does that, and upstream's
+`Dockerfile` stays untouched:
 
 ```dockerfile
-# syntax=docker/dockerfile:1
-# oberon/Dockerfile: the Oberon layer on top of the stock Philo image built from the same commit.
+# oberon/Dockerfile (abridged): the Oberon layer on top of the stock Philo image built from the same commit.
 ARG PHILO_BASE
+FROM busybox:1.37@sha256:<index digest> AS oberon-web
+COPY oberon/web/ /in/
+RUN mkdir /out && find /in -maxdepth 1 -type f \( -name '*.js' -o -name '*.css' \) -exec cp {} /out/ \;
+
 FROM ${PHILO_BASE}
-COPY --chown=node:node oberon/web/ /app/apps/web/dist/oberon/
+COPY --from=oberon-web /out/ /app/apps/web/dist/oberon/
 ```
 
-- The `# syntax` line must be the first line of the file, or it is only a comment.
-- Copy the directory, and add `oberon/web/test` to `.dockerignore` (a one-line fork addition), so the tests stay out.
-  A glob like `oberon/web/*.css` would fail the build whenever no `.css` file exists.
+- **The base image is built first, from the same commit:** `docker build -t philo-upstream:local .` (upstream's
+  `Dockerfile`), then `docker build -f oberon/Dockerfile --build-arg PHILO_BASE=philo-upstream:local .`.
+  `PHILO_BASE` has no default, so forgetting it fails the build instead of layering onto a stale local image.
+- **A throwaway busybox stage picks the files:** only the top-level `oberon/web/*.js` and `*.css` reach the image, so
+  `README.md` and a later `oberon/web/test/` stay out without touching `.dockerignore`. A `COPY` glob would fail the
+  build whenever no `.css` (or no `.js`) file exists; `find` copies zero files happily. busybox is pinned by its
+  multi-arch index digest.
+- **No `--chown`:** the served files stay root-owned and `0644`, readable but not writable by the app's `node` user,
+  like the rest of `dist`. A file-write bug as `node` can't then plant a script served same-origin to every user.
 - It inherits `USER node`, the `HEALTHCHECK`, `VOLUME /data` and `CMD`. `.dockerignore` doesn't exclude `oberon/`.
 
 ### 2.2 Published by a fork-only workflow
 
-Add `.github/workflows/oberon-image.yml`. Don't edit upstream's `docker-publish.yml`, because every sync would
-conflict on it. Record the new file in `oberon/AGENTS.md`.
+[`.github/workflows/ol-release.yml`](../.github/workflows/ol-release.yml) ("Oberon release image"). Upstream's
+`docker-publish.yml` is untouched, because every sync would conflict on it. It is recorded in `oberon/AGENTS.md`.
 
-- `on: push: tags: ['ol-v*']`, plus `workflow_dispatch` with a tag input that must match
-  `^ol-v[0-9]+\.[0-9]+\.[0-9]+-[0-9]+$`.
-- Build the upstream `Dockerfile` (load only), then `oberon/Dockerfile` with `PHILO_BASE` set to that image.
-- Smoke-test the **layered** image: `GET /version` returns the root `package.json` `version` (so a tag cut on the
-  wrong commit fails), and `GET /oberon/philo-host.js` returns 200.
-- Push `ghcr.io/oberonlogistics/philo:<tag>` and print the pushed digest in the job summary. Pin each action by SHA,
-  as upstream does.
+- `on: push: tags: ['ol-v*']`, plus `workflow_dispatch` with an existing tag as input. Both must match
+  `^ol-v[0-9]+\.[0-9]+\.[0-9]+-[0-9]+$`. Only `oberonlogistics/philo` runs it.
+- **The tagged commit must be on `main`** (`git merge-base --is-ancestor HEAD origin/main`), so code that skipped the
+  fork merge bar can't be published, by tag or by dispatch. The tag's `<upstream version>` must equal the root
+  `package.json` `version`.
+- Build the upstream `Dockerfile` (load only, never pushed), then `oberon/Dockerfile` with `PHILO_BASE` set to it.
+- Smoke-test the **layered** image, as upstream's workflow does for the stock one: `GET /version` returns
+  `name: philo` and the `package.json` `version`. Then every `oberon/web/*.js` and `*.css` in the checkout must be
+  served at `/oberon/<file>` with 200 (none today; `philo-host.js` once the chrome lands). And once upstream's
+  standalone app sets a `Content-Security-Policy`, `GET /` must still carry it (skipped while the source has none).
+- Push `ghcr.io/oberonlogistics/philo:<tag>` only, and print `<image>:<tag>@sha256:<digest>` in the job summary:
+  that is the reference production pins (rule 1 below). Each action is pinned by SHA, as upstream does.
 
 **The package is shared with stock images.** Upstream's `docker-publish.yml` publishes `${{ github.repository }}`,
 which in the fork is the same `ghcr.io/oberonlogistics/philo`:

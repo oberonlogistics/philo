@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1
 # oberon/Dockerfile: the Oberon layer on top of the stock Philo image built
 # from the same commit by the upstream ./Dockerfile. Build that one first:
 #
@@ -9,7 +8,8 @@
 # dist, which apps/standalone serves, so they're same-origin at /oberon/<file>
 # (oberon/docs/chrome.md §3.1). Everything else (USER node, HEALTHCHECK,
 # VOLUME /data, CMD) is inherited unchanged.
-ARG PHILO_BASE=philo-upstream:local
+# No default: a missing --build-arg fails instead of layering onto a stale image.
+ARG PHILO_BASE
 
 # Pick the files in a throwaway stage: a COPY glob fails the build when it
 # matches nothing, and oberon/web may hold only its README (or tests later).
@@ -18,4 +18,5 @@ COPY oberon/web/ /in/
 RUN mkdir /out && find /in -maxdepth 1 -type f \( -name '*.js' -o -name '*.css' \) -exec cp {} /out/ \;
 
 FROM ${PHILO_BASE}
-COPY --from=oberon-web --chown=node:node /out/ /app/apps/web/dist/oberon/
+# No --chown: the served files stay root-owned, read-only to the node user.
+COPY --from=oberon-web /out/ /app/apps/web/dist/oberon/
