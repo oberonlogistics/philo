@@ -154,6 +154,14 @@ discovery documents answer 404.
    existing account from the built-in IdP is bound the same way, once, by its
    verified email.
 
+Providers that rotate refresh tokens and revoke the whole grant when one is
+used twice are fine: the PWA's tabs share one refresh token and take turns
+refreshing it under a Web Lock, so two open tabs never spend the same token.
+That holds where the browser offers Web Locks, which needs a secure context
+(HTTPS or localhost).
+Signing out in one tab revokes the token they share, and the other tabs find
+it gone at their next refresh and sign out too.
+
 API keys keep working. MCP connectors that want OAuth must be registered at the
 provider and listed in `PHILO_OIDC_AGENT_CLIENT_IDS`; everything else the
 provider issues is refused, because a valid signature only proves the token
