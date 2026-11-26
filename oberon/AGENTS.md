@@ -152,6 +152,13 @@ not part of the fork merge bar.
   bring it in.
 - Tag a fork release on `main` as `ol-v<upstream version>-<n>`, for example `ol-v0.5.1-1`. The
   `ol-` prefix keeps upstream's `v*` tag trigger from firing.
+- **Releases.** Pushing an `ol-v*` tag runs [`.github/workflows/ol-release.yml`](../.github/workflows/ol-release.yml):
+  it builds the stock image from upstream's `Dockerfile`, layers [`oberon/Dockerfile`](Dockerfile) on top (which adds
+  `oberon/web/*.js` and `*.css`, served at `/oberon/<file>`), smoke-tests it, and pushes only
+  `ghcr.io/oberonlogistics/philo:<tag>`, printing the digest in the job summary. Re-run it for an existing tag with
+  `workflow_dispatch`. Upstream's `docker-publish.yml` still publishes stock `:edge`, `:latest` and semver tags to
+  the same package, so pin production by `ol-v*` tag and digest. Neither file edits an upstream file. Locally:
+  `docker build -t philo-upstream:local . && docker build -f oberon/Dockerfile .`
 - Deployment is not decided yet. Production at `https://philo.oberonlogistics.com` runs the stock
   upstream image on its own host. Write the plan in `oberon/DEPLOY.md` before switching anything.
 
