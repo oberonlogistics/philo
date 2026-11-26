@@ -211,7 +211,7 @@ describe('push.live', () => {
 })
 
 describe('events.stream', () => {
-  const CHANGE = { id: 'e1', type: 'lead.deleted', occurredAt: '2026-10-25T00:00:00.000Z', funnelId: 2, data: { leadId: 4 } }
+  const CHANGE = { id: 'e1', type: 'lead.deleted', occurredAt: '2026-10-25T00:00:00.000Z', actor: 'user:1', funnelId: 2, data: { leadId: 4 } }
 
   it('hands over every change, scoped to a funnel when asked', async () => {
     const event = `event: lead.deleted\ndata: ${JSON.stringify(CHANGE)}\n\n`
