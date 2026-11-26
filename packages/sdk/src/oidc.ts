@@ -86,6 +86,11 @@ export interface AuthorizationRequestOptions {
   resource?: readonly string[] | undefined
   /** OIDC Core `prompt`, such as `none` for a silent request. Not sent when unset. */
   prompt?: string | undefined
+  /**
+   * OIDC Core `id_token_hint`: an id_token from an earlier sign-in, naming the
+   * person this request is meant for. A hint only; the IdP may ignore it.
+   */
+  idTokenHint?: string | undefined
 }
 
 /**
@@ -122,6 +127,7 @@ export async function createAuthorizationRequest(
   const resource = [...(options.resource ?? [])]
   for (const value of resource) url.searchParams.append('resource', value)
   if (options.prompt !== undefined) url.searchParams.set('prompt', options.prompt)
+  if (options.idTokenHint !== undefined) url.searchParams.set('id_token_hint', options.idTokenHint)
   return {
     url: url.toString(),
     state,

@@ -209,6 +209,19 @@ describe('resource indicators and prompt (RFC 8707)', () => {
     expect(pending.issuer).toBe(metadata.issuer)
   })
 
+  it('sends id_token_hint when given one, and not otherwise', async () => {
+    const hinted = await createAuthorizationRequest({
+      metadata,
+      clientId: 'c',
+      redirectUri: 'https://a/cb',
+      scope: 'openid',
+      idTokenHint: 'the-id-token',
+    })
+    expect(new URL(hinted.url).searchParams.get('id_token_hint')).toBe('the-id-token')
+    const plain = await createAuthorizationRequest({ metadata, clientId: 'c', redirectUri: 'https://a/cb', scope: 'openid' })
+    expect(new URL(plain.url).searchParams.has('id_token_hint')).toBe(false)
+  })
+
   it('sends neither when none is asked for', async () => {
     const pending = await createAuthorizationRequest({ metadata, clientId: 'c', redirectUri: 'https://a/cb', scope: 'openid' })
     const url = new URL(pending.url)

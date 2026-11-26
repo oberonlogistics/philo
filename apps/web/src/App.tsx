@@ -12,6 +12,7 @@ import {
   type Auth,
   type User,
 } from './auth.ts'
+import { configureExtraTokens } from './extra-token.ts'
 import { BrandMark } from './icons.tsx'
 import { syncPushSubscription } from './push.ts'
 
@@ -120,10 +121,21 @@ export function App() {
     if (signedIn) void syncPushSubscription()
   }, [signedIn])
 
+  // Extra tokens belong to one sign-in: a fresh one clears their cache and
+  // refusals, and leaving the signed-in shell drops them.
+  useEffect(() => {
+    if (screen.kind !== 'ready') return
+    configureExtraTokens(screen.auth)
+    return () => configureExtraTokens(undefined)
+  }, [screen])
+
   const auth = screen.kind === 'ready' || screen.kind === 'signed-out' ? screen.auth : undefined
 
   const handleSignOut = useCallback(async () => {
     if (auth === undefined) return
+    // First, not on leaving the shell: sign-out may send the browser on to the
+    // provider's end-session page, and nothing should be handed out meanwhile.
+    configureExtraTokens(undefined)
     await signOut(auth)
     setScreen({ kind: 'signed-out', auth })
   }, [auth])
