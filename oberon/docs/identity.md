@@ -346,7 +346,7 @@ copy is run by the human.
 
 | Credential | After cutover | Action |
 |---|---|---|
-| API keys (`philo_…`) | Keep working while `id=1` has access: a token confirmed its role in the last 30 days (ADR-0012). They belong to `id=1` (ADR-0007), which keeps its id | Sign in to the PWA after cutover, which confirms the role. Review the list in Settings and revoke the ones nobody uses. |
+| API keys (`philo_…`) | Keep working while `id=1` has access: its role was confirmed in the last 30 days (ADR-0012). The clock starts at MU-a's migration, **not** at cutover, so an instance that ran an upstream release with MU-a for more than 30 days before cutover starts with `id=1` already lapsed: keys 401, no push, no admin fallback for new-lead email. They belong to `id=1` (ADR-0007), which keeps its id | **Cutover checklist, inside the window, before intake reopens and agents reconnect:** the operator signs in to the PWA through OL Auth (binds and confirms `id=1`) and checks that an existing key works. Fallback in the stopped window (human): `UPDATE users SET role_confirmed_at = <now in ms> WHERE id = 1;`. Afterwards, review the keys in Settings and revoke the ones nobody uses. |
 | Push subscriptions | Keep working; they are keyed by `user_id`, which is unchanged | None |
 | The PWA's built-in refresh token in a browser | The next refresh goes to OL Auth's token endpoint and gets `invalid_grant`; the session clears (`oidc.ts:336-341`) and the person signs in | None |
 | Built-in OAuth access tokens (connectors) | Still resolve for at most 1 h (G14), then 401 | Optional: in the same stopped window, `DELETE FROM access_tokens; DELETE FROM refresh_tokens; DELETE FROM authorization_codes;` |
