@@ -493,7 +493,7 @@ with `docker logs philo`. Then:
 
 ### People
 
-An admin adds people under `/api/v1/users` (the PWA's People screen):
+An admin adds people under `/api/v1/users` (in the PWA, account menu → People):
 an invite returns a one-time link, valid 7 days, for the admin to pass on.
 The person opens it, sets their name and password, and signs in. An admin can
 change a role, deactivate an account (every key, token and push subscription
@@ -501,6 +501,8 @@ it holds is revoked at once; its history stays) and reactivate it, and issue a
 24-hour password-reset link. With an external IdP, invites, reset links and
 passwords live at the IdP, and so do roles when the role scopes are set;
 deactivation still works and refuses the account whatever its tokens say.
+Everyone changes their own name, email and password under account menu → Your
+account (email and password only with the built-in IdP).
 
 An admin who is the only one and has lost their password prints a reset link
 where the data directory is:
