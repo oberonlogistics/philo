@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
-import { AppShell } from './AppShell.tsx'
+import type { WebConfig } from '@philo/sdk'
+import { AppShell, SIGN_OUT_PATH } from './AppShell.tsx'
 import {
+  accessRefusedMessage,
   beginSignIn,
+  browser,
   CALLBACK_PATH,
   completeSignIn,
   fetchCurrentUser,
@@ -13,6 +16,7 @@ import {
   type User,
 } from './auth.ts'
 import { configureExtraTokens } from './extra-token.ts'
+import { hostScriptLoaded, loadWebConfig } from './host.ts'
 import { BrandMark } from './icons.tsx'
 import { syncPushSubscription } from './push.ts'
 
@@ -20,7 +24,7 @@ type Screen =
   | { kind: 'loading' }
   | { kind: 'unreachable' }
   | { kind: 'signed-out'; auth: Auth; error?: string }
-  | { kind: 'ready'; auth: Auth; user: User }
+  | { kind: 'ready'; auth: Auth; user: User; web: WebConfig }
 
 /**
  * The URL is replaced rather than pushed: the callback's code is single-use, so
@@ -31,27 +35,39 @@ function leaveCallback(to: string): void {
   window.history.replaceState(null, '', to)
 }
 
-async function signedInScreen(auth: Auth): Promise<Screen> {
-  const user = await fetchCurrentUser(auth)
-  return user === undefined ? { kind: 'signed-out', auth } : { kind: 'ready', auth, user }
+async function signedInScreen(auth: Auth, web: WebConfig): Promise<Screen> {
+  let user: User | undefined
+  try {
+    user = await fetchCurrentUser(auth)
+  } catch (error) {
+    // Signed in at the IdP, refused here: saying so beats "unreachable", and
+    // dropping the session lets "Try again" fetch a token that may now pass.
+    const refused = accessRefusedMessage(error)
+    if (refused === undefined) throw error
+    auth.session.clear()
+    return { kind: 'signed-out', auth, error: refused }
+  }
+  return user === undefined ? { kind: 'signed-out', auth } : { kind: 'ready', auth, user, web }
 }
 
-async function finishCallback(auth: Auth): Promise<Screen> {
+async function finishCallback(auth: Auth, web: WebConfig): Promise<Screen> {
   try {
     leaveCallback(await completeSignIn(auth))
   } catch (error) {
     leaveCallback('/')
     return { kind: 'signed-out', auth, error: signInErrorMessage(error) }
   }
-  return signedInScreen(auth)
+  return signedInScreen(auth, web)
 }
 
 async function boot(): Promise<Screen> {
   finishSignOut()
   try {
-    const auth = await loadAuth()
-    if (window.location.pathname === CALLBACK_PATH) return await finishCallback(auth)
-    return await signedInScreen(auth)
+    // Side by side, and never the reason boot fails: without it, there is
+    // simply no host script (host.ts).
+    const [auth, web] = await Promise.all([loadAuth(), loadWebConfig()])
+    if (window.location.pathname === CALLBACK_PATH) return await finishCallback(auth, web)
+    return await signedInScreen(auth, web)
   } catch {
     return { kind: 'unreachable' }
   }
@@ -131,12 +147,24 @@ export function App() {
 
   const auth = screen.kind === 'ready' || screen.kind === 'signed-out' ? screen.auth : undefined
 
+  // Signed out at `/sign-out`, there is nothing left to do there, and signing
+  // in again must not come straight back to it.
+  useEffect(() => {
+    if (screen.kind === 'signed-out' && window.location.pathname === SIGN_OUT_PATH) leaveCallback('/')
+  }, [screen])
+
   const handleSignOut = useCallback(async () => {
     if (auth === undefined) return
     // First, not on leaving the shell: sign-out may send the browser on to the
     // provider's end-session page, and nothing should be handed out meanwhile.
     configureExtraTokens(undefined)
-    await signOut(auth)
+    const left = await signOut(auth)
+    // Nothing a host script left resident may outlive the person who signed
+    // out (ADR-0013), so a page that loaded one starts again from scratch.
+    if (!left && hostScriptLoaded()) {
+      browser.assign('/')
+      return
+    }
     setScreen({ kind: 'signed-out', auth })
   }, [auth])
 
@@ -179,6 +207,8 @@ export function App() {
   return (
     <AppShell
       user={screen.user}
+      web={screen.web}
+      signIn={screen.auth.config}
       onSignOut={() => void handleSignOut()}
       onSessionExpired={handleSessionExpired}
     />

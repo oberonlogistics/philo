@@ -23,6 +23,8 @@ const app = createStandaloneApp({
   contentSecurityPolicy: pwaContentSecurityPolicies({
     issuer: config.externalIdp?.issuer,
     connectOrigins: config.webConnectOrigins,
+    hostScriptUrl: config.webHost.scriptUrl,
+    assetOrigins: config.webAssetOrigins,
   }),
 })
 

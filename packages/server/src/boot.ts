@@ -1,9 +1,9 @@
 import { createApp } from './app.ts'
 import { createExternalIdp } from './auth/external-idp.ts'
-import type { Config } from './config.ts'
+import { configWarnings, type Config } from './config.ts'
 import { openDatabase, type Db } from './db/index.ts'
 import { ChangeFeed } from './events/feed.ts'
-import { ROLES_ON_ACCOUNTS } from './auth/access.ts'
+import { accessPolicyOf } from './auth/access.ts'
 import { createLeadEmailHook, sweepUnsentEmails, type EmailDeps } from './email/service.ts'
 import { isEmailConfigured, readEmailSettings } from './email/settings.ts'
 import { createSmtpSender, smtpGreetingName } from './email/transport.ts'
@@ -50,8 +50,8 @@ export function bootServer(config: Config): BootedServer {
 
   // Links in emails and notifications open the PWA, wherever it is served.
   const createSender = createSmtpSender(smtpGreetingName(config.publicBaseUrl))
-  // Roles live on the account until an external IdP grants them by scope — ADR-0012.
-  const access = ROLES_ON_ACCOUNTS
+  // Roles live on the account unless an external IdP grants them by scope — ADR-0012.
+  const access = accessPolicyOf(config.externalIdp)
   const emailDeps: EmailDeps = { db, appUrl: config.appUrl, createSender, access }
 
   // Also after openDatabase, for the data dir.
@@ -75,6 +75,7 @@ export function bootServer(config: Config): BootedServer {
     liveFeed,
     changeFeed,
     trustProxy: config.trustProxy,
+    webHost: config.webHost,
     createEmailSender: createSender,
     // Email is the guaranteed notification channel and push is the fast one —
     // ADR-0004 — with the live stream standing in for push in a browser that
@@ -99,7 +100,10 @@ function onListening(config: Config, db: Db, emailDeps: EmailDeps): void {
   console.log(
     config.externalIdp === undefined
       ? `  identity:        built-in IdP at ${config.publicBaseUrl}/oauth`
-      : `  identity:        external IdP ${config.externalIdp.issuer} (operator client ${config.externalIdp.clientId})`,
+      : `  identity:        external IdP ${config.externalIdp.issuer} (operator client ${config.externalIdp.clientId})` +
+          (config.externalIdp.roles === undefined
+            ? ', one account'
+            : `, roles from scopes ${config.externalIdp.roles.userScope} / ${config.externalIdp.roles.adminScope}`),
   )
   console.log(`  data dir:        ${config.dataDir}`)
   console.log(`  database:        ${db.$client.name}`)
@@ -135,6 +139,7 @@ function onListening(config: Config, db: Db, emailDeps: EmailDeps): void {
   // in memory, so this is what carries the guarantee across a restart — but a
   // mail server that is down must not hold up serving.
   void sweepUnsentEmails(emailDeps)
+  for (const warning of configWarnings(config)) console.warn(`  note: ${warning}`)
   if (config.trustProxy) {
     // Worth stating positively: this is the setting that decides whether a header
     // a stranger can write is allowed to name the caller.

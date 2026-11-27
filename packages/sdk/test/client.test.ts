@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { ApiError, PhiloClient, isAdminRequired, isUnauthorized } from '../src/index.ts'
+import { ApiError, PhiloClient, isAccessDenied, isAdminRequired, isUnauthorized } from '../src/index.ts'
 
 interface Call {
   url: string
@@ -38,6 +38,14 @@ describe('PhiloClient', () => {
     await new PhiloClient({ fetch, accessToken: async () => undefined }).stages.list()
     expect(header(calls[0], 'authorization')).toBeUndefined()
     expect(calls[0]?.url).toBe('/api/v1/stages')
+  })
+
+  it('reads the web config without a token', async () => {
+    const config = { hostScriptUrl: '/host.js', hostConfig: { a: 1 }, hostTokenResources: ['https://feed.example.com'] }
+    const { calls, fetch } = recorder(() => json(config))
+    expect(await new PhiloClient({ fetch }).web.config()).toEqual(config)
+    expect(calls[0]?.url).toBe('/api/v1/web/config')
+    expect(calls[0]?.init?.method).toBe('GET')
   })
 
   it('sends JSON on every state change', async () => {
@@ -115,6 +123,24 @@ describe('PhiloClient', () => {
       .webhooks.list()
       .catch((e) => e)
     expect(isAdminRequired(other)).toBe(false)
+  })
+
+  it('keeps the challenge of a refusal, and tells a token that lets nobody in apart', async () => {
+    const challenge = 'Bearer realm="philo", error="insufficient_scope", scope="crm:user"'
+    const respond = (code: string) => () =>
+      new Response(JSON.stringify({ error: code }), {
+        status: 403,
+        headers: { 'content-type': 'application/json', 'www-authenticate': challenge },
+      })
+    const scope = await new PhiloClient({ fetch: recorder(respond('insufficient_scope')).fetch }).auth.session().catch((e) => e)
+    expect(scope).toMatchObject({ status: 403, code: 'insufficient_scope', challenge })
+    expect(isAccessDenied(scope)).toBe(true)
+    const disabled = await new PhiloClient({ fetch: recorder(respond('account_disabled')).fetch }).auth.session().catch((e) => e)
+    expect(isAccessDenied(disabled)).toBe(true)
+    const adminOnly = await new PhiloClient({ fetch: recorder(respond('admin_required')).fetch }).auth.session().catch((e) => e)
+    expect(isAccessDenied(adminOnly)).toBe(false)
+    const plain = await new PhiloClient({ fetch: recorder(() => json({ error: 'not_found' }, 404)).fetch }).auth.session().catch((e) => e)
+    expect(plain.challenge).toBeUndefined()
   })
 
   it('returns the role with the principal', async () => {

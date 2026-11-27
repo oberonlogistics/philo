@@ -30,7 +30,7 @@ closed by rows 10 and 11 of §2.1:
 |---|---|---|---|---|
 | G1 | **No email in access tokens.** An access token carries `sub`, `client_id`, `scp`/`scope`, `aud` and `ext`. Email is in the ID token and `/userinfo` only (OLA §5.2, §5.4). | The first bind and first-account provisioning read `email` and `email_verified` from the **access token** (`external-idp.ts:108-112`, `:138-139`). Without them, `findOrProvisionUser` returns `undefined` and every token is refused. `docs/DEPLOYMENT.md:134-136` states the requirement. | **Was the blocker** (closed, last column). With OL Auth, no token could bind or provision an account. | **Closed** by #62 (ID-U2): on the unbound path, a token without a verified email gets it from userinfo (`external-idp.ts:138-175`, `:253`). |
 | G2 | DCR clients have **random ids**, and an unused one is deleted and registers again (OLA §2.2). | Admits `PHILO_OIDC_CLIENT_ID` plus the static list `PHILO_OIDC_AGENT_CLIENT_IDS` only (`external-idp.ts:95-97`, `config.ts:95-98`). ADR-0006 (`docs/adr/0006-headless-server-sdk-clients.md:98-101`) records the allow-list. | **Blocker for agents.** A DCR client can never be listed ahead of time. | **Open**, row 11 (ID-U5). Still the static list (`external-idp.ts:120-122`, `config.ts:165-168`); `*` is read as a literal client id. |
-| G3 | Authorize every operation on `scp` (OLA §6 step 5, §12.2). A token for an API with no scope is refused at OL Auth. | No scope check on external tokens. The built-in scopes `operator` and `mcp` "grant or withhold nothing" (ADR-0007). | Admitting any client (G2) is safe only with a scope check. Without one, a person who holds no Philo role could still get a token for Philo's audience through a first-party client that may ask for it. ADR-0012 makes the scopes the roles (`up/oidc-multi-user`). | **Open**, row 10 (MU-b). Still no scope check; boot always passes `ROLES_ON_ACCOUNTS` (`access.ts:13-25`, `external-idp.ts:201-203`). |
+| G3 | Authorize every operation on `scp` (OLA §6 step 5, §12.2). A token for an API with no scope is refused at OL Auth. | No scope check on external tokens. The built-in scopes `operator` and `mcp` "grant or withhold nothing" (ADR-0007). | Admitting any client (G2) is safe only with a scope check. Without one, a person who holds no Philo role could still get a token for Philo's audience through a first-party client that may ask for it. ADR-0012 makes the scopes the roles (`up/oidc-multi-user`). | **Closed** by #77 (row 10, v0.7.0) when `PHILO_OIDC_USER_SCOPE` and `PHILO_OIDC_ADMIN_SCOPE` are set. Release 1 leaves them unset, so it still has no scope check. |
 | G4 | **Audiences.** A resource can carry several identifiers. A token holds the identifier that was asked for (OLA §3, §13 item 3). Handbook registers `/api` and `/mcp`. Its API accepts either; its MCP endpoint accepts only `/mcp`. | One optional `PHILO_OIDC_AUDIENCE` (`config.ts:94`, `external-idp.ts:79`). The MCP app forwards the caller's token to the API (`apps/mcp/src/app.ts:57-58`, `:102`, `:117`), so the API must accept the MCP token too. | One audience value cannot accept both the PWA's `/api` token and an agent's `/mcp` token. | **Closed** by #65 (ID-U1): `PHILO_OIDC_AUDIENCE` is a comma list (`config.ts:157-164`). |
 | G5 | **MCP protected-resource metadata** at `/.well-known/oauth-protected-resource/mcp` with `resource` = the server's address, `authorization_servers` = the issuer, and the resource's scopes. A `401` carries `resource_metadata` (OLA §13 items 1-2). | The path and the 401 are already right (`apps/mcp/src/app.ts:19`, `:61-66`, `:96-107`). `authorization_servers` already comes from the API's sign-in config, so it names OL Auth in external mode (`app.ts:72-76`). `scopes_supported` is hard-coded `['mcp']` (`apps/mcp/src/app.ts:77`). | Claude Code asks for the scopes in the metadata. `mcp` is unknown at OL Auth and is dropped, which leaves nothing useful, so OL Auth refuses with `access_denied` (OLA §3). | **Open**, row 10 (MU-b). `scopes_supported` is still `['mcp']` (`apps/mcp/src/app.ts:89`). |
 | G6 | `403` with `WWW-Authenticate: Bearer error="insufficient_scope", scope="…"` for a token that lacks a scope (OLA §12 step 4). | Any refusal is `401 invalid_token` (`auth/middleware.ts:105-109`). If the API answered 403, the MCP app would treat it as an unexpected error and fail with a 500 (`apps/mcp/src/app.ts:103-104`). | Once G3 exists, a client would get 401 for a missing scope, re-authorize, receive the same scopes, and loop. | **Open in part**, row 10 (MU-b). Since #68 the MCP app passes an API 403 through (`apps/mcp/src/app.ts:121-125`), without `WWW-Authenticate` or `resource_metadata`, and the API never answers `insufficient_scope`. |
@@ -70,15 +70,15 @@ users, ADR-0012).
 | 7 | `up/multi-user-adr` | #66 | merged | ADR-0012, several users with roles | — | **ADR-0012** |
 | 8 | `up/roles-authz` (MU-a) | #68 | merged | a role on every account and a guard on every route | 7 | Implements 0012 |
 | 9 | `up/pwa-csp` (CH-UP-1) | #67, #76 | merged | a CSP for the PWA shell, with `PHILO_WEB_CONNECT_ORIGINS` | — | No |
-| 10 | `up/oidc-multi-user` (MU-b) | — | in progress | G3, G5, G6: roles from scopes, one account per subject | 2, 3, 8 | Implements 0012 |
+| 10 | `up/oidc-multi-user` (MU-b) | #77 | merged (v0.7.0) | G3, G5, G6: roles from scopes, one account per subject | 2, 3, 8 | Implements 0012 |
 | 11 | `up/oidc-any-agent-client` (ID-U5) | — | planned | G2 | 6, 10 | Implements 0012 |
 | 12 | `up/user-management` (MU-c) | — | planned | people on the built-in IdP, API and SDK | 8 | Implements 0012 |
 | 13 | `up/pwa-people` (MU-d) | — | planned | People and account screens in the PWA | 12 | Implements 0012 |
 | 14 | `up/pwa-refresh-lock` (ID-U6) | #69 | merged | G8 | — | No |
 | 15 | `up/pwa-rp-logout` (ID-U7) | #72 | merged | G9 | — | No |
 | 16 | CH-UP-2, extra token in a hidden frame | #70 | merged | the chrome's tokens | 2, 9 | No |
-| 17 | CH-UP-3, host script and top-bar slot (`up/web-host-script`) | — | in progress | the chrome | 16 | Implements **ADR-0013** (#71, merged) |
-| 18 | CH-UP-4, `PHILO_WEB_ASSET_ORIGINS` (with row 17) | — | in progress | the chrome's assets (origin plus optional path prefix) | 9, 17 | No |
+| 17 | CH-UP-3, host script and top-bar slot (`up/web-host-script`) | #78 | merged (v0.7.0) | the chrome | 16 | Implements **ADR-0013** (#71, merged) |
+| 18 | CH-UP-4, `PHILO_WEB_ASSET_ORIGINS` (with row 17) | #78 | merged (v0.7.0) | the chrome's assets (origin plus optional path prefix) | 9, 17 | No |
 | (19) | `up/oidc-bind-subject` (ID-U8) | — | only if upstream asks | §4 fallback | — | No |
 
 Rows 1–7, 9, 14 and 15 do not depend on each other. ADR-0012 is the several-users decision, and it already covers
@@ -287,16 +287,17 @@ ignored: unknown env names are not read, and `PHILO_OIDC_AGENT_CLIENT_IDS=*` is 
 which admits no agent (`config.ts:165-168`, `external-idp.ts:122`). Startup succeeds, there is no scope check, and the
 role analysis of §4 does not hold.
 
-**Release 1** ([`oberon/CUTOVER.md`](../CUTOVER.md), decided 2026-11-26) runs on `ol-v0.6.0-1`, without
-rows 10 and 11. It sets the issuer, client id, audience, scope and resource lines above and **none** of
+**Release 1** ([`oberon/CUTOVER.md`](../CUTOVER.md), decided 2026-11-26) runs on `ol-v0.7.0-1`. That
+image contains row 10 (philo-crm/philo#77) but not row 11, and release 1 leaves row 10's variables unset, so it
+behaves as an image without row 10 does. It sets the issuer, client id, audience, scope and resource lines above and **none** of
 `PHILO_OIDC_USER_SCOPE`, `PHILO_OIDC_ADMIN_SCOPE`, `PHILO_OIDC_AGENT_SCOPE` or `PHILO_OIDC_AGENT_CLIENT_IDS`. So:
 
 - only the one operator account (`id=1`) binds, by verified email (§4.1); every other OL person is refused;
 - only tokens from the `philo` client are admitted, so agents use **API keys** until the release with row 11;
 - `scopes_supported` stays `['mcp']`, so an agent that tries OAuth against `/mcp` fails at OL Auth.
 
-The rest of the block arrives as an env-and-image upgrade (`oberon/DEPLOY.md` §7) once rows 10 and 11 have merged
-and reached the fork.
+The rest of the block arrives as an env-and-image upgrade (`oberon/DEPLOY.md` §7) once row 11 has merged too
+(row 10 is in v0.7.0), and with the role-confirmation step of §4.
 
 - The PWA asks for both role scopes. OL Auth leaves out a scope the person's roles do not grant and refuses only
   when nothing useful is left (OLA §3), so a user's token carries `philo:user` alone, which ADR-0012 reads as a
@@ -325,8 +326,8 @@ that id. Nothing else references the built-in IdP. The move keeps the same row, 
 `users.external_subject = "https://auth.oberonlogistics.com <sub>"`, and loses nothing. MU-a's migration makes
 `id=1` an admin.
 
-**Which release this holds for.** On release 1 (§3, without rows 10 and 11), roles are not read from scopes: boot
-passes `ROLES_ON_ACCOUNTS`, so `id=1` stays the admin the migration made it whatever its token says, and the 30-day
+**Which release this holds for.** On release 1 (§3, with row 10's variables unset), roles are not read from scopes: boot's
+`accessPolicyOf` gives `rolesFromIdp: false` (the boot line ends `, one account`), so `id=1` stays the admin the migration made it whatever its token says, and the 30-day
 rule does not apply (`access.ts:13-25`). The role analysis below, and in §4.4, needs an image that contains rows 10
 and 11. From that release on, `id=1`'s role is whatever the operator's next PWA token says, so **the operator must
 hold the Philo admins role (§5) before the first sign-in on that release**, or `id=1` becomes a user. `CUTOVER.md`
@@ -549,7 +550,9 @@ public.
 
 ## Verified, not assumed
 
-Checked against `ae2f9c5` (sync #12), 2026-11-26.
+Checked against `ae2f9c5` (sync #12), 2026-11-26. Since then, v0.7.0 (fork sync #16) merged rows 10, 17 and 18
+(#77, #78): the bullets below that say "row 10 changes that" describe release 1, which leaves row 10's variables unset.
+Line numbers in `external-idp.ts`, `config.ts` and `access.ts` moved with #77; cite by function name when you update them.
 
 - OL Auth access tokens carry no email (OLA §5.2, table, "There are no roles, no profile and no email"). Philo now
   gets the email from userinfo on the unbound path only, and only when the token has no verified email; `sub` must
