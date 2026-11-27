@@ -17,10 +17,10 @@ the steps.
 **Not in release 1.** These come later as ordinary upgrades (`ol-v0.7.0-2` or a later version: DEPLOY.md §7), with no
 new window:
 
-- the shared chrome (app switcher, account menu, bell in Philo's top bar), which waits on the host-script seam
-  (`up/web-host-script`);
-- several people signing in, with roles from OL Auth scopes (`up/oidc-multi-user`). Until then, only the account that
-  binds can sign in, and a second OL Auth person is refused;
+- the shared chrome (app switcher, account menu, bell in Philo's top bar). The host-script code is in this image
+  (philo-crm/philo#78), but it needs the Oberon wiring and the `PHILO_WEB_HOST_*` env, a later change;
+- several people signing in, with roles from OL Auth scopes. The code is in this image (#77), but release 1 leaves
+  its env unset. Until then, only the account that binds can sign in, and a second OL Auth person is refused;
 - MCP agents signing in through OL Auth with self-registered clients (`PHILO_OIDC_AGENT_CLIENT_IDS=*`, identity spec
   U5). Until then, agents use **API keys**. Connectors holding built-in OAuth tokens keep working **for up to an
   hour** after the cutover, because built-in access tokens still resolve in external mode
@@ -101,9 +101,9 @@ unless the maintainer waives them again, with a date.
   resource, userinfo) runs for the first time at §7 step 8. DEPLOY.md §6 R1 asks the rehearsal to confirm a password
   sign-in for the bound account; release 1 replaces that with a simulated bind (§6 step 5) and this code reading:
   - `external_subject` is declared at `packages/server/src/db/schema.ts:213` and read only in
-    `packages/server/src/auth/external-idp.ts:240-262`;
+    `packages/server/src/auth/external-idp.ts` (the single-account path release 1 uses is `:410-453`);
   - built-in sign-in (`auth/credentials.ts`, `oauth/routes.ts`) never reads it;
-  - the bind sets only `externalSubject` and leaves `password_hash` alone (`external-idp.ts:259-263`).
+  - the bind sets only `externalSubject` and leaves `password_hash` alone (`external-idp.ts:431-432`).
 
   So under R1 the bound account signs in with its password as before. If the bind fails in the window, the fix is R1.
 
@@ -481,8 +481,8 @@ shows its fallback message, and nothing is queued.
 
 There is **no intake hold in Caddy** this time (DEPLOY.md §5 step 3). The hold kept intake closed while the operator
 confirmed their role: with roles from IdP scopes, an account needs a role confirmed in the last 30 days. Release 1
-boots with roles on the accounts (`packages/server/src/boot.ts:54`), so `hasAccess` ignores `role_confirmed_at`
-(`packages/server/src/auth/access.ts:58`), and nothing has to happen before leads flow again. Intake reopens as soon
+leaves the role scopes unset, so boot's `accessPolicyOf` gives `rolesFromIdp: false`
+(`packages/server/src/boot.ts:54`), and `hasAccess` ignores `role_confirmed_at` (`packages/server/src/auth/access.ts:65-72`), and nothing has to happen before leads flow again. Intake reopens as soon
 as the new container is healthy, and Caddy isn't touched.
 
 1. `docker stop <philo container>`. Then `date +%s%3N`: write this down as **T0** (after the stop, so no lead lands
@@ -565,7 +565,7 @@ Leads arrive again from step 5 on, so a rollback must keep them.
 
 **R1: environment only (identity or Notify trouble; the image itself works).** Remove the whole `philo-ol.env`, not
 single variables: `PHILO_OIDC_SCOPE` or `PHILO_OIDC_RESOURCE` without the issuer is a boot error
-(`packages/server/src/config.ts:143-145`), and Notify without its issuer is "half configured". So R1 also turns the
+(`EXTERNAL_ONLY`, `packages/server/src/config.ts:229-247`), and Notify without its issuer is "half configured". So R1 also turns the
 Notify feed off.
 
 - **`docker run` launch:** stop the new container, check that it is the new one, and remove it:
