@@ -163,10 +163,12 @@ record the current launch command (`docker inspect`) before the window, because 
   which applies in the rehearsal: Caddy's access log next to Philo's per-caller limits.
 - At Cloudflare, make sure no WAF, bot-fight or challenge rule applies to `/api/intake/*`. A cross-origin `fetch`
   can't solve a challenge, and the health check's `OPTIONS` preflight wouldn't notice. The test lead in §5 does.
-- **Cache of `/oberon/*`.** Philo sets `Cache-Control` only for HTML, `/assets/*`, `/sw.js` and the manifest, so
-  browsers (and Cloudflare, if proxied) cache `/oberon/philo-host.js` heuristically. Version the URL per release:
-  `PHILO_WEB_HOST_SCRIPT_URL=/oberon/philo-host.js?v=<tag>` (the chrome implementation must accept a query string).
-  Alternatively, have Caddy add `Cache-Control: no-cache` for `/oberon/*`.
+- **Cache of `/oberon/*`.** Philo sets `Cache-Control` only for HTML, `/assets/*`, `/sw.js`, the manifest and `/host/`
+  (ADR-0013's mounted directory), so browsers (and Cloudflare, if proxied) cache `/oberon/philo-host.js` and
+  `/oberon/philo-ol.css` heuristically. Version the URL per release:
+  `PHILO_WEB_HOST_SCRIPT_URL=/oberon/philo-host.js?v=<tag>`. Philo accepts the query, and the script loads
+  `philo-ol.css` from beside itself with the same query, so the one bump versions both. Alternatively, have Caddy add
+  `Cache-Control: no-cache` for `/oberon/*`.
 
 ### 3.3 The OL environment
 
@@ -199,11 +201,12 @@ PHILO_OIDC_AGENT_SCOPE=philo:user philo:admin offline_access
 # up/oidc-any-agent-client (ID-U5)
 PHILO_OIDC_AGENT_CLIENT_IDS=*
 
-# Chrome: chrome spec §3.3 (up/pwa-csp, UP-2..UP-4, ol/ chrome)
+# Chrome: chrome spec §3.3 (philo-crm/philo#78, in v0.7.0; ol/chrome-wiring)
 PHILO_WEB_HOST_SCRIPT_URL=/oberon/philo-host.js?v=<tag>
 PHILO_WEB_HOST_CONFIG={"notifyUrl":"https://notify.oberonlogistics.com","notifyResource":"https://notify.oberonlogistics.com"}
-PHILO_WEB_ASSET_ORIGINS=https://auth.oberonlogistics.com
-PHILO_WEB_CONNECT_ORIGINS=https://auth.oberonlogistics.com,https://notify.oberonlogistics.com
+PHILO_WEB_HOST_TOKEN_RESOURCES=https://auth.oberonlogistics.com/api,https://notify.oberonlogistics.com
+PHILO_WEB_ASSET_ORIGINS=https://auth.oberonlogistics.com/chrome/v1/
+PHILO_WEB_CONNECT_ORIGINS=https://notify.oberonlogistics.com
 
 # Notify: notifications spec §12.3 (ol/ notify module, change-feed seam)
 OL_NOTIFY_URL=https://notify.oberonlogistics.com
@@ -215,6 +218,13 @@ OL_NOTIFY_ROLE=<the Philo users role's slug>
 ```
 
 - `PHILO_APP_URL` and `PHILO_MCP_URL` stay unset, because their defaults are the production addresses.
+- The chrome lines are explained in chrome spec §3.3. In short: `<tag>` is the release tag (§7); the token resources
+  are exactly the strings `philo-host.js` asks for (the issuer's `/api` with no trailing slash, and `notifyResource`
+  as written in the config), and never a Philo identifier, which is a startup error; `PHILO_WEB_ASSET_ORIGINS` is the
+  `/chrome/v1/` **prefix**, never the bare OL Auth origin, which hosts uploaded avatars (ADR-0013, "Trust"); OL Auth is
+  already in `connect-src` from `PHILO_OIDC_ISSUER`, so `PHILO_WEB_CONNECT_ORIGINS` lists only Notify. The three
+  `PHILO_WEB_HOST_CONFIG`/`_TOKEN_RESOURCES`/`ASSET_ORIGINS` lines are a startup error without
+  `PHILO_WEB_HOST_SCRIPT_URL`, so they come and go together.
 - `OL_NOTIFY_ROLE` is the Philo **users** role (D7), so everyone who works leads gets the bell. Each member must also
   be able to open the Philo tile (notifications spec §12.1).
 - **OL Auth registration (HUMAN)** follows identity spec §5, with ADR-0012's scopes in place of the single

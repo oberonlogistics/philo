@@ -1,8 +1,11 @@
 # Shared chrome in Philo: integration spec
 
-Status: proposal, revised 2026-11-26. UP-1 (the CSP) is in progress as `up/pwa-csp`; UP-2 to UP-4 and the Oberon
-wiring are design only. The landing order of these PRs with the identity and notification work is in
-[`identity.md` §2.1](identity.md#21-landing-order-for-all-three-fork-specs). Branch `ol/spec-chrome`.
+Status: revised 2026-11-26. The upstream seams are merged and released in v0.7.0: the CSP (UP-1, philo-crm/philo#67),
+the extra-token helper (UP-2) and the host script with its CSP sources (UP-3 and UP-4, philo-crm/philo#78,
+[ADR-0013](../../docs/adr/0013-operator-host-script.md)). §2 keeps the design as proposed; where it differs, the ADR
+and the code win. The Oberon wiring (§3) is in `oberon/web/` (`ol/chrome-wiring`) and ships in release 2
+([`CUTOVER.md`](../CUTOVER.md#release-2-chrome-and-several-users)). The landing order with the identity and
+notification work is in [`identity.md` §2.1](identity.md#21-landing-order-for-all-three-fork-specs).
 
 **Goal.** Every signed-in Philo page shows the shared Oberon Logistics chrome at the right of its top bar:
 `<ol-notifications>` (the shared bell), `<ol-app-switcher current="…">` and `<ol-account-menu>`. The chrome loads at
@@ -270,67 +273,106 @@ later if another operator asks for them.
 ## 3. Oberon wiring (`ol/`)
 
 All of it lives in new files under `oberon/` and in environment values. **No upstream file changes**, so the table
-in `oberon/AGENTS.md` doesn't grow. The fork builds its own image from a new `oberon/Dockerfile` (proposed here, shared
-with the notifications module), which runs upstream's build and adds the Oberon files. Upstream's `Dockerfile` stays
-unedited.
+in `oberon/AGENTS.md` doesn't grow. The fork builds its own image from `oberon/Dockerfile` (shared with the
+notifications module), which layers the Oberon files onto the stock image built from the same commit. Upstream's
+`Dockerfile` stays unedited.
 
 ### 3.1 Files
 
 | File | What it is |
 |---|---|
-| `oberon/web/philo-host.js` | The host script (§3.2). Framework-free, a classic script with no build step, about 310 lines. |
+| `oberon/web/philo-host.js` | The host script (§3.2). Framework-free, a classic script with no build step. |
 | `oberon/web/philo-ol.css` | Maps Philo's CSS variables onto `--ol-*` tokens (§4). |
-| `oberon/web/test/*.test.ts` | Tests against a stub chrome (§6). Run by `oberon/scripts/verify.sh`. |
-| `oberon/Dockerfile` | Copies `oberon/web/*.js` and `*.css` into `apps/web/dist/oberon/` so they're served same-origin at `/oberon/…`. `oberon/DEPLOY.md`, not yet written, carries the env. |
+| `oberon/web/test/*.test.ts` | Tests against a stub chrome (§6). Run by `oberon/scripts/verify.sh` and `ol-ci.yml`. |
+| `oberon/Dockerfile` | Copies `oberon/web/*.js` and `*.css` into `apps/web/dist/oberon/`, so they're served same-origin at `/oberon/…`. [`DEPLOY.md`](../DEPLOY.md) §2.1. |
+
+The image serves `/oberon/` with no `Cache-Control` (ADR-0013's `no-cache` covers only `/host/`), so the script URL
+carries `?v=<tag>` and the script loads `philo-ol.css` from beside itself **with the same query**: one bump per
+release versions both files ([`DEPLOY.md`](../DEPLOY.md) §3.2).
 
 ### 3.2 `philo-host.js`
 
-```js
-window.PhiloHost = { async mount(ctx) { … } }
-```
-
-It does the following, in order:
+It implements ADR-0013's contract (`window.PhiloHost.mount(ctx)`, `PhiloHostContext` version 1,
+`apps/web/src/host.ts`). It does the following, in order:
 
 1. Adds `<link rel=stylesheet>` for `${ctx.issuer}/chrome/v1/tokens.css`, `${ctx.issuer}/chrome/v1/fonts.css` and
-   `/oberon/philo-ol.css` (in that order, so the mapping sees the tokens). Then it loads
-   `${ctx.issuer}/chrome/v1/ol-chrome.js` with `data-issuer` and `data-defer-config`, the same way as Handbook's
-   `loadChromeScript`.
-2. Fills `ctx.slot` with:
-   - `<ol-notifications>`, and only when `ctx.config.notifyUrl` is set.
+   `philo-ol.css` from beside the script (in that order, so the mapping sees the tokens). Then it loads
+   `${ctx.issuer}/chrome/v1/ol-chrome.js` with `data-issuer`, `data-defer-config` and `crossorigin="anonymous"`, once
+   per page. A trailing `/` on the issuer is trimmed.
+2. Builds, for `ctx.slot`:
+   - `<ol-notifications>`, only when `ctx.config.notifyUrl` is set. No `toast-new`: new leads already reach people by
+     push and email.
    - `<ol-app-switcher current="${ctx.clientId}">`. The tile's client id is Philo's OL Auth public client, the same value
      as `PHILO_OIDC_CLIENT_ID`: `philo` (`identity.md` §5).
-   - `<ol-account-menu>` with one `<a slot="item">` for each of `ctx.accountItems`. A click calls `preventDefault()` and
-     then `ctx.navigate(path)`. It gets `compact` below 760 px through a `matchMedia` listener.
-3. Calls `OLChrome.configure({ notifyUrl, getToken, onSignOut })`:
-   - `getToken({audience})`: `"auth"` → `ctx.getToken({ resource: \`${ctx.issuer}/api\`, scope: "auth:apps auth:account" })`.
+   - `<ol-account-menu>` with one `<a slot="item">` for each of `ctx.accountItems`. A plain click calls
+     `preventDefault()` and then `ctx.navigate(path)`. It gets `compact` below 760 px through a `matchMedia` listener.
+3. Calls `OLChrome.configure({ issuer, notifyUrl, getToken, onSignOut })` **before** the elements connect, and
+   `OLChrome.refresh()` when the chrome was already on the page (a later sign-in), so no element draws the last
+   person's account:
+   - `getToken({audience})`: `"auth"` → `ctx.getToken({ resource: \`${issuer}/api\`, scope: "auth:apps auth:account" })`.
      `"notify"` → `ctx.getToken({ resource: ctx.config.notifyResource, scope: "notify:read" })`. Anything else → `null`.
-     No `prompt`: OL Auth answers the first request for a new audience only without it (integration.md §4). Handbook
-     does the same (`session.ts` `secondTokenArgs`). `prompt=none` is wrong for the first request.
-   - `onSignOut`: `ctx.signOut()`. Philo's sign-out also ends the OL Auth session (`identity.md` ID-U7), so the
-     chrome's menu and Philo's do the same thing.
-4. **Theme sync** (§4): it watches `document.documentElement`'s `data-theme` with a `MutationObserver` and calls
+     Both resources must be listed, exactly as the script asks for them, in `PHILO_WEB_HOST_TOKEN_RESOURCES`; Philo
+     answers `null` for anything else. No `prompt`: OL Auth answers the first request for a new audience only without
+     it (integration.md §4). The extra-token helper adds `openid` itself.
+   - `onSignOut`: `ctx.signOut()`. Philo's sign-out also ends the OL Auth session (`identity.md` ID-U7), and with a
+     host script loaded it reloads the page.
+4. Inserts the elements and requires `<ol-account-menu>` to upgrade (an open shadow root). A chrome that defines it
+   after its script has loaded gets `READY_MS` (2 s).
+5. **Theme sync** (§4): it watches `document.documentElement`'s `data-theme` with a `MutationObserver` and calls
    `ctx.setTheme(…)` when the value differs from the last one it saw. That guard matters: `setTheme` writes the same
    attribute, and without it the two would loop.
-5. Returns `{ replaces: ['account-menu'] }`. On `ctx.signal` abort, it disconnects the observer and empties the slot.
+6. Resolves `{ replaces: ['account-menu'] }`.
+
+**Failures.** ADR-0013 gives the mount 5 s from injecting `philo-host.js`; the stylesheets, `ol-chrome.js` and the
+upgrade all come out of that, which is why `READY_MS` is shorter.
+
+- *Before it resolves*, the mount rejects, and Philo keeps its own menu for the life of the page, when: the context
+  version isn't 1; `ol-chrome.js` fails to load or defines no `OLChrome`; the account menu doesn't upgrade; or it
+  throws or fires `ol-chrome-error` while connecting. Philo's deadline aborts `ctx.signal`, which rejects the same way.
+- *After it resolves*, it calls `ctx.fallback()` (Philo shows its own menu again) when the account menu reports an
+  error before the person has used it, when the menu leaves the slot, or when `ol-chrome.js` throws. A muted
+  cross-origin "Script error." names no script and isn't counted. Philo's own watch (an empty slot) also applies.
+- On `ctx.signal` abort it removes its stylesheets, empties the slot, and drops its observers, listeners and token
+  access.
+- `/sign-out` signs out whatever the top bar shows (ADR-0013).
+
+It ignores `ctx.user` and `ctx.role`: the account menu reads the person from OL Auth (`GET /api/v1/me`).
 
 ### 3.3 Environment (production)
 
+The block is in [`DEPLOY.md`](../DEPLOY.md) §3.3, and release 2's runbook in
+[`CUTOVER.md`](../CUTOVER.md#release-2-chrome-and-several-users). The identity variables it relies on
+(`PHILO_OIDC_ISSUER`, `PHILO_OIDC_AUDIENCE`) are in [`identity.md` §3](identity.md#3-oberon-only-wiring-ol), the single
+source.
+
 ```sh
-PHILO_WEB_HOST_SCRIPT_URL=/oberon/philo-host.js
-PHILO_WEB_HOST_CONFIG='{"notifyUrl":"https://notify.oberonlogistics.com","notifyResource":"https://notify.oberonlogistics.com"}'
+PHILO_WEB_HOST_SCRIPT_URL=/oberon/philo-host.js?v=<tag>
+PHILO_WEB_HOST_CONFIG={"notifyUrl":"https://notify.oberonlogistics.com","notifyResource":"https://notify.oberonlogistics.com"}
+PHILO_WEB_HOST_TOKEN_RESOURCES=https://auth.oberonlogistics.com/api,https://notify.oberonlogistics.com
 PHILO_WEB_ASSET_ORIGINS=https://auth.oberonlogistics.com/chrome/v1/
 PHILO_WEB_CONNECT_ORIGINS=https://notify.oberonlogistics.com
 ```
 
-- `PHILO_OIDC_ISSUER=https://auth.oberonlogistics.com` comes from the identity spec. UP-1 and UP-2 derive the issuer's
-  `connect-src` and `frame-src` entries from it, so the issuer is not repeated in `PHILO_WEB_CONNECT_ORIGINS`.
-- `script-src`, `style-src` and `font-src` allow only `https://auth.oberonlogistics.com/chrome/v1/` (the chrome, the
-  tokens and the fonts). `img-src` gets the bare origin, for tile icons served from the issuer.
-- Notify's production address is `https://notify.oberonlogistics.com`, but Notify's own `SPEC.md` §2 marks it
-  "**TODO**: confirm". Its resource identifier is the same string there.
-- The resulting policy meets DESIGN §5.2's "CSP" line: the issuer (path-scoped) in `script-src`, the issuer in
-  `connect-src` and `img-src`, plus Notify in `connect-src`. It also adds `style-src` and `font-src` for `tokens.css` and `fonts.css`, which §5.2 leaves
-  out because it assumes `'self'`-hosted tokens.
+- **Script.** Same-origin, so `'self'` covers it and the policy gains nothing for it.
+- **Token resources.** `${issuer}/api` with no trailing slash, and `notifyResource` exactly as written in
+  `PHILO_WEB_HOST_CONFIG`: Philo compares them as exact strings. Philo refuses at startup a list that names its own
+  audience, or one set without `PHILO_OIDC_AUDIENCE`.
+- **Assets.** `script-src`, `style-src` and `font-src` gain only `https://auth.oberonlogistics.com/chrome/v1/` (the
+  chrome, the tokens, the fonts); `img-src` gains the bare origin, for avatars and tile icons, which OL Auth serves at
+  `/media/…`. Listing the prefix and not the origin matters, because OL Auth hosts uploads (ADR-0013, "Trust"). It is
+  safe as a prefix because OL Auth serves `/chrome/v1/` as an exact list of files: any other path under it is a 404,
+  nothing there redirects, and a `..%2F` path matches no file. Its uploads are images sent with `nosniff` and
+  `default-src 'none'`, so even a path that slipped the prefix couldn't run as script or style. Tile icons and avatars
+  must therefore be OL Auth uploads: the chrome draws `icon_url` and `avatar_url` as `<img>`, and an image on any other
+  origin is blocked by the policy (cosmetic only, the tile or menu still works).
+- **Connect.** The issuer is already in `connect-src` and `frame-src` (from `PHILO_OIDC_ISSUER`), so only Notify is
+  listed.
+- **Inline styles.** None needed. The chrome styles its shadow roots with constructable stylesheets
+  (`adoptedStyleSheets`) and sets per-item values (a tile's tint, a panel's position) through the CSSOM, which
+  `style-src` doesn't restrict. It falls back to a `<style>` element only in engines without constructable
+  stylesheets, which no supported browser is. `philo-ol.css` and the chrome's stylesheets are linked files.
+- Notify's production address is `https://notify.oberonlogistics.com` (DEPLOY.md D8). Its resource identifier is the
+  same string.
 
 ### 3.4 What the chrome needs from the auth work (`ol/spec-auth`)
 
