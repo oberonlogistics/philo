@@ -164,6 +164,8 @@ describe('inviting someone — POST /api/v1/users', () => {
     const page = await testApp.app.request(pathOf(created.inviteUrl))
     expect(page.status).toBe(200)
     expect(page.headers.get('referrer-policy')).toBe('no-referrer')
+    // The token is in the URL: no shared or back-forward cache may keep the page.
+    expect(page.headers.get('cache-control')).toBe('no-store')
     const html = await page.text()
     expect(html).toContain('name="name"')
     expect(html).toContain('name="password"')
@@ -190,7 +192,9 @@ describe('inviting someone — POST /api/v1/users', () => {
     expect((await useLink(testApp, inviteUrl, { password: NEW_PASSWORD })).status).toBe(302)
     const again = await useLink(testApp, inviteUrl, { password: 'somebody-else-entirely' })
     expect(again.status).toBe(410)
-    expect((await testApp.app.request(pathOf(inviteUrl))).status).toBe(410)
+    const gone = await testApp.app.request(pathOf(inviteUrl))
+    expect(gone.status).toBe(410)
+    expect(gone.headers.get('cache-control')).toBe('no-store')
     expect(await signIn(testApp, 'sam@example.com', 'somebody-else-entirely')).toMatchObject({ code: false })
   })
 

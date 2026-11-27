@@ -1,4 +1,4 @@
-import { and, eq, gt, isNull } from 'drizzle-orm'
+import { TransactionRollbackError, and, eq, gt, isNull } from 'drizzle-orm'
 import { Hono } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
 import { csrf } from 'hono/csrf'
@@ -31,10 +31,12 @@ export interface AccountLinkDeps {
 export function createAccountLinkRoutes(deps: AccountLinkDeps): Hono {
   const routes = new Hono()
 
-  // The token is in the path: keep it out of every Referer this page could send.
+  // The token is in the path: keep it out of every Referer this page could
+  // send, and out of shared and back-forward caches.
   routes.use('/*', async (c, next) => {
     await next()
     c.res.headers.set('Referrer-Policy', 'no-referrer')
+    c.res.headers.set('Cache-Control', 'no-store')
   })
   routes.use('/*', bodyLimit({ maxSize: 16 * 1024, onError: (c) => c.html(renderLinkGone(), 400) }))
   routes.use('/*', csrf({ origin: new URL(deps.publicBaseUrl).origin }))
@@ -80,30 +82,45 @@ export function createAccountLinkRoutes(deps: AccountLinkDeps): Hono {
     const rawName = typeof body['name'] === 'string' ? body['name'].trim().slice(0, MAX_NAME_LENGTH) : ''
 
     const now = new Date()
-    const used = deps.db.transaction((tx) => {
-      // Claimed in the same write that checks it, so two posts of one link cannot both win.
-      const [claimed] = tx
-        .update(accountLinks)
-        .set({ usedAt: now })
-        .where(and(eq(accountLinks.id, link.id), isNull(accountLinks.usedAt), gt(accountLinks.expiresAt, now)))
-        .returning({ userId: accountLinks.userId })
-        .all()
-      if (claimed === undefined) return false
-      const [account] = tx.select({ disabledAt: users.disabledAt }).from(users).where(eq(users.id, claimed.userId)).all()
-      if (account === undefined || account.disabledAt !== null) return false
-      voidLinks(tx, claimed.userId, now)
-      tx.update(users)
-        .set({ passwordHash, ...(link.purpose === 'invite' && rawName !== '' ? { name: rawName } : {}) })
-        .where(eq(users.id, claimed.userId))
-        .run()
-      // Whoever held the old password may hold its sessions too.
-      if (link.purpose === 'reset') revokeGrants(tx, claimed.userId)
-      return true
-    })
+    const used = refusedOnRollback(() =>
+      deps.db.transaction((tx) => {
+        // Claimed in the same write that checks it, so two posts of one link cannot both win.
+        const [claimed] = tx
+          .update(accountLinks)
+          .set({ usedAt: now })
+          .where(and(eq(accountLinks.id, link.id), isNull(accountLinks.usedAt), gt(accountLinks.expiresAt, now)))
+          .returning({ userId: accountLinks.userId })
+          .all()
+        if (claimed === undefined) return false
+        const [account] = tx.select({ disabledAt: users.disabledAt }).from(users).where(eq(users.id, claimed.userId)).all()
+        if (account === undefined || account.disabledAt !== null) {
+          // Deactivated since the page checked: undo the claim, so the link is refused, not spent.
+          tx.rollback()
+        }
+        voidLinks(tx, claimed.userId, now)
+        tx.update(users)
+          .set({ passwordHash, ...(link.purpose === 'invite' && rawName !== '' ? { name: rawName } : {}) })
+          .where(eq(users.id, claimed.userId))
+          .run()
+        // Whoever held the old password may hold its sessions too.
+        if (link.purpose === 'reset') revokeGrants(tx, claimed.userId)
+        return true
+      }),
+    )
     if (!used) return c.html(renderLinkGone(), 410)
     deps.guards.throttle.reset(key)
     return c.redirect(deps.appUrl, 302)
   })
 
   return routes
+}
+
+/** Runs a transaction that refuses by rolling back, reporting that refusal as `false`. */
+function refusedOnRollback(run: () => boolean): boolean {
+  try {
+    return run()
+  } catch (error) {
+    if (error instanceof TransactionRollbackError) return false
+    throw error
+  }
 }

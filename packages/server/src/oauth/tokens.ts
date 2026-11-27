@@ -146,6 +146,12 @@ export function redeemAuthorizationCode(
   }
 }
 
+/**
+ * Both tokens carry the same `createdAt`, and `changePassword` relies on it:
+ * that shared timestamp (with the client) is how it finds the refresh token
+ * issued alongside the caller's access token, and keeps that pair alone. Give
+ * the pair its own link before changing either timestamp.
+ */
 export function issueTokens(db: Db, subject: GrantSubject, now = new Date()): IssuedTokens {
   deleteExpiredGrants(db, now)
   const accessToken = generate(ACCESS_PREFIX)
