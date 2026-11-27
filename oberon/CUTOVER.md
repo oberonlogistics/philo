@@ -190,16 +190,20 @@ EOF
 
 **GATE 2: the maintainer approves pushing the tag.**
 
-From a checkout of fork `main`, at the v0.7.0 sync or later:
+Release 1 is **pinned to fork commit `1041266`**, the `main` this runbook was reviewed against. Later work on `main`
+(people management lands with migration `0014`) belongs to release 2, so don't tag a newer commit for release 1.
+From a checkout of the fork:
 
 ```sh
 git fetch origin
 git fetch https://github.com/philo-crm/philo.git refs/tags/v0.5.1:refs/tags/v0.5.1 --no-tags   # the fork has no v* tags
 git rev-parse 'v0.5.1^{commit}'                                              # must resolve
-git diff --name-only v0.5.1 origin/main -- 'packages/server/drizzle/*.sql'   # expect exactly 0013_user_roles.sql
-git ls-tree --name-only origin/main packages/server/drizzle/ | grep -c '\.sql$'   # expect 14
-git show origin/main:package.json | grep '"version"'                         # expect 0.7.0
-git tag -a ol-v0.7.0-1 -m "ol-v0.7.0-1" origin/main
+R1=1041266
+git merge-base --is-ancestor $R1 origin/main && echo on-main                  # on-main
+git diff --name-only v0.5.1 $R1 -- 'packages/server/drizzle/*.sql'           # expect exactly 0013_user_roles.sql
+git ls-tree --name-only $R1 packages/server/drizzle/ | grep -c '\.sql$'           # expect 14
+git show $R1:package.json | grep '"version"'                                # expect 0.7.0
+git tag -a ol-v0.7.0-1 -m "ol-v0.7.0-1" $R1
 git push origin ol-v0.7.0-1        # this one tag only; never --tags
 ```
 
