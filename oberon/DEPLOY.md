@@ -170,27 +170,34 @@ The identity lines are a copy of identity spec §3, which is the single source: 
 this copy identical. On an image without `up/oidc-multi-user` and `up/oidc-any-agent-client`, the scope and agent
 lines are silently ignored, and `*` is read as a literal client id (identity spec §3).
 
-`docker --env-file` takes values literally, so the values have no quotes.
+`docker --env-file` takes values literally, so the values have no quotes and no comment after a value (only whole-line `#` comments).
 
 ```sh
 # Identity: identity spec §3 (the single source; keep identical)
 PHILO_OIDC_ISSUER=https://auth.oberonlogistics.com
 PHILO_OIDC_CLIENT_ID=philo
-PHILO_OIDC_AUDIENCE=https://philo.oberonlogistics.com/api,https://philo.oberonlogistics.com/mcp   # up/oidc-audiences (ID-U1, merged)
-PHILO_OIDC_SCOPE=openid email profile offline_access philo:user philo:admin                      # up/oidc-sign-in-request (ID-U3, merged)
-PHILO_OIDC_RESOURCE=https://philo.oberonlogistics.com/api                                         # up/oidc-sign-in-request (ID-U3, merged)
-PHILO_OIDC_USER_SCOPE=philo:user                                                                  # up/oidc-multi-user (MU-b)
-PHILO_OIDC_ADMIN_SCOPE=philo:admin                                                                # up/oidc-multi-user (MU-b)
-PHILO_OIDC_AGENT_SCOPE=philo:user philo:admin offline_access                                      # up/oidc-multi-user (MU-b)
-PHILO_OIDC_AGENT_CLIENT_IDS=*                                                                     # up/oidc-any-agent-client (ID-U5)
+# up/oidc-audiences (ID-U1, merged)
+PHILO_OIDC_AUDIENCE=https://philo.oberonlogistics.com/api,https://philo.oberonlogistics.com/mcp
+# up/oidc-sign-in-request (ID-U3, merged)
+PHILO_OIDC_SCOPE=openid email profile offline_access philo:user philo:admin
+# up/oidc-sign-in-request (ID-U3, merged)
+PHILO_OIDC_RESOURCE=https://philo.oberonlogistics.com/api
+# up/oidc-multi-user (MU-b)
+PHILO_OIDC_USER_SCOPE=philo:user
+# up/oidc-multi-user (MU-b)
+PHILO_OIDC_ADMIN_SCOPE=philo:admin
+# up/oidc-multi-user (MU-b)
+PHILO_OIDC_AGENT_SCOPE=philo:user philo:admin offline_access
+# up/oidc-any-agent-client (ID-U5)
+PHILO_OIDC_AGENT_CLIENT_IDS=*
 
-# Chrome: chrome spec §3.3                                                                        # up/pwa-csp, UP-2..UP-4, ol/ chrome
+# Chrome: chrome spec §3.3 (up/pwa-csp, UP-2..UP-4, ol/ chrome)
 PHILO_WEB_HOST_SCRIPT_URL=/oberon/philo-host.js?v=<tag>
-PHILO_WEB_HOST_CONFIG='{"notifyUrl":"https://notify.oberonlogistics.com","notifyResource":"https://notify.oberonlogistics.com"}'
+PHILO_WEB_HOST_CONFIG={"notifyUrl":"https://notify.oberonlogistics.com","notifyResource":"https://notify.oberonlogistics.com"}
 PHILO_WEB_ASSET_ORIGINS=https://auth.oberonlogistics.com
 PHILO_WEB_CONNECT_ORIGINS=https://auth.oberonlogistics.com,https://notify.oberonlogistics.com
 
-# Notify: notifications spec §12.3                                                                # ol/ notify module, change-feed seam
+# Notify: notifications spec §12.3 (ol/ notify module, change-feed seam)
 OL_NOTIFY_URL=https://notify.oberonlogistics.com
 OL_NOTIFY_RESOURCE=https://notify.oberonlogistics.com
 OL_NOTIFY_CLIENT_ID=<the philo notify service account>
@@ -257,13 +264,16 @@ docker run --rm -v "$SCRATCH":/data alpine sh -c 'apk add --no-cache sqlite >/de
 - Set `PHILO_PUBLIC_BASE_URL=http://localhost:24910` and use the rehearsal client `philo-dev` (identity spec §4.3)
   for OL Auth. The redirect is built from the browser's origin, and `philo-dev` registers only
   `http://localhost:24910/auth/callback`, so forward that address to the scratch port:
-  `ssh -L 24910:localhost:$PORT`. Override only this; everything else is identity spec §3. `PHILO_TRUSTED_PROXY=true`
+  `ssh -L 24910:localhost:$PORT`. Override these, as identity spec §4.3 does: `PHILO_PUBLIC_BASE_URL`,
+  `PHILO_OIDC_CLIENT_ID=philo-dev`, and `PHILO_OIDC_AGENT_CLIENT_IDS` set to the rehearsal's listed ids, **never `*`**.
+  Everything else is identity spec §3. **Release 1 doesn't use this section's sign-in:** it rehearses per
+  [`CUTOVER.md`](CUTOVER.md) §6, with no `philo-dev` and the bind checked live. `PHILO_TRUSTED_PROXY=true`
   stays, so the boot-log check below holds; with loopback only, nobody but the host can spoof `X-Forwarded-For`.
 - Start it only with `-p 127.0.0.1:$PORT:3000`, `--name "$SCRATCH"`, and no Caddy route. Never `docker stop` or
   restore by a name you didn't type from `$SCRATCH`.
 
 Then check: `PRAGMA integrity_check` is `ok`; migrations applied (boot log); sign-in through OL Auth; a lead with an
-attachment opens; the chrome loads; the boot log shows
+attachment opens; the chrome loads (chrome release only, and not with `philo-dev`, which isn't first-party); the boot log shows
 `rate limits:     per caller, from X-Forwarded-For (PHILO_TRUSTED_PROXY=true)`. Rehearse rollback R1 and, if the
 tag has migrations, the R2 data path (§6) on the same copy. Write down how long each step took. Afterwards delete the
 scratch container, volume and `./rehearsal/`: they hold applicants' personal data.

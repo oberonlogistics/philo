@@ -257,20 +257,27 @@ None of this is code. The external-IdP mode is configured entirely by env, so th
 is configuration plus this runbook. **This block is the single source** for the identity env. `oberon/DEPLOY.md` §3.3
 copies it and must match it; `oberon/CUTOVER.md` §5 carries the release-1 subset below.
 
-It is written as a `docker --env-file` file, which takes values literally: no quotes.
+It is written as a `docker --env-file` file, which takes values literally: no quotes, and no comment after a value (only whole-line `#` comments).
 
 ```sh
 PHILO_PUBLIC_BASE_URL=https://philo.oberonlogistics.com
 PHILO_TRUSTED_PROXY=true
 PHILO_OIDC_ISSUER=https://auth.oberonlogistics.com
 PHILO_OIDC_CLIENT_ID=philo
-PHILO_OIDC_AUDIENCE=https://philo.oberonlogistics.com/api,https://philo.oberonlogistics.com/mcp   # ID-U1
-PHILO_OIDC_SCOPE=openid email profile offline_access philo:user philo:admin                      # ID-U3
-PHILO_OIDC_RESOURCE=https://philo.oberonlogistics.com/api                                         # ID-U3
-PHILO_OIDC_USER_SCOPE=philo:user                                                                  # MU-b
-PHILO_OIDC_ADMIN_SCOPE=philo:admin                                                                # MU-b
-PHILO_OIDC_AGENT_SCOPE=philo:user philo:admin offline_access                                      # MU-b
-PHILO_OIDC_AGENT_CLIENT_IDS=*                                                                     # ID-U5
+# ID-U1
+PHILO_OIDC_AUDIENCE=https://philo.oberonlogistics.com/api,https://philo.oberonlogistics.com/mcp
+# ID-U3
+PHILO_OIDC_SCOPE=openid email profile offline_access philo:user philo:admin
+# ID-U3
+PHILO_OIDC_RESOURCE=https://philo.oberonlogistics.com/api
+# MU-b
+PHILO_OIDC_USER_SCOPE=philo:user
+# MU-b
+PHILO_OIDC_ADMIN_SCOPE=philo:admin
+# MU-b
+PHILO_OIDC_AGENT_SCOPE=philo:user philo:admin offline_access
+# ID-U5
+PHILO_OIDC_AGENT_CLIENT_IDS=*
 ```
 
 **Which image reads which line.** The full block needs an image that contains rows 10 (MU-b) and 11 (ID-U5). Cut
@@ -280,7 +287,7 @@ ignored: unknown env names are not read, and `PHILO_OIDC_AGENT_CLIENT_IDS=*` is 
 which admits no agent (`config.ts:165-168`, `external-idp.ts:122`). Startup succeeds, there is no scope check, and the
 role analysis of §4 does not hold.
 
-**Release 1** ([`oberon/CUTOVER.md`](../CUTOVER.md), decided 2026-11-26) runs on today's image (`ae2f9c5`), without
+**Release 1** ([`oberon/CUTOVER.md`](../CUTOVER.md), decided 2026-11-26) runs on `ol-v0.6.0-1`, without
 rows 10 and 11. It sets the issuer, client id, audience, scope and resource lines above and **none** of
 `PHILO_OIDC_USER_SCOPE`, `PHILO_OIDC_ADMIN_SCOPE`, `PHILO_OIDC_AGENT_SCOPE` or `PHILO_OIDC_AGENT_CLIENT_IDS`. So:
 
@@ -370,17 +377,23 @@ Pick one of these, before the first sign-in:
 
 ### 4.3 Rehearsal
 
-**Agents never read production or its data.** Agents rehearse on a synthetic instance only. The check against a real
-copy is run by the human.
+**Release 1 rehearses per [`oberon/CUTOVER.md`](../CUTOVER.md) §6 instead of this section.** There is no `philo-dev` and
+no OL Auth sign-in: the bind is checked live in the window (CUTOVER §7 step 8), with R1 as the fallback. Under the
+maintainer's dated waiver in CUTOVER §1, the agent named there runs that rehearsal on a real copy, under its data
+rules. This section applies to the later release that adds rows 10, 11 and the chrome.
+
+**Otherwise, agents never read production or its data.** Agents rehearse on a synthetic instance only. The check
+against a real copy is run by the human.
 
 1. **Synthetic (agents).** Seed a scratch data dir with a built-in-IdP account `id=1`, a few fake leads, an API key
    and a push subscription, with an email that matches a test OL Auth person. Run the fork image with the §3 env
-   (release 1: its release-1 subset), bound to `127.0.0.1` with `PHILO_PORT=24910`, and with these overrides:
+   bound with `-p 127.0.0.1:24910:3000` (leave `PHILO_PORT` at the image's 3000), and with these overrides:
    - `PHILO_PUBLIC_BASE_URL=http://localhost:24910`, the address the browser reaches. The redirect is built from the
      browser's origin, so it must be `localhost:24910`, the one `philo-dev` registers, whatever the host port is.
      `oberon/DEPLOY.md` §4.3 uses the same address.
    - `PHILO_TRUSTED_PROXY` unset when nothing sits in front: otherwise rate limits key on a spoofable
-     `X-Forwarded-For`. (`DEPLOY.md` §4.3 keeps it on the loopback-only copy, to check the production boot line.) Use a **separate rehearsal client** at OL Auth, `philo-dev` (§5):
+     `X-Forwarded-For`. (`DEPLOY.md` §4.3 keeps it on the loopback-only copy, to check the production boot line.)
+   - Use a **separate rehearsal client** at OL Auth, `philo-dev` (§5):
    public, redirect `http://localhost:24910/auth/callback`, so production's client never lists a loopback address.
    Set `PHILO_OIDC_CLIENT_ID=philo-dev` and point `PHILO_OIDC_AUDIENCE` at the production resource identifiers, which
    works because the audience is only a name. Set `PHILO_OIDC_AGENT_CLIENT_IDS` to the rehearsal's listed ids,
@@ -524,7 +537,7 @@ public.
 
 1. **The operator's emails**: do Philo's account email and the operator's verified OL Auth email match?
    If not, which fallback in §4.2: change an email (recommended) or SQL? It must be settled before the first
-   sign-in, because a mismatch now provisions a new empty account (§4.1).
+   sign-in, because with row 10, a mismatch provisions a new empty account (§4.1); on release 1 it is refused.
 2. **The agent scope** (§3): `philo:user philo:admin offline_access` lets an admin's agent act as an admin.
    The default, `philo:user offline_access`, would keep every agent a user. This spec proposes the first.
 3. **Upstream appetite for the wildcard** (ID-U5). ADR-0012 decides it, but if upstream declines the PR, the
