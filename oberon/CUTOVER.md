@@ -646,7 +646,8 @@ boot. Tell the maintainer when R2 starts, and again if it passes that target.
 ## Release 2 (chrome and several users)
 
 **Draft.** An env-and-image upgrade on top of release 1, through DEPLOY.md §7, with no new data migration expected.
-It needs no window: intake stays up, and only signed-in pages change. The §1 waiver doesn't cover it; the maintainer
+It needs no window: intake is down only while the container is swapped (upgrade step 2, about a minute, while the
+new container turns healthy), and only signed-in pages change. The §1 waiver doesn't cover it; the maintainer
 runs it or gives a new one. Re-check this section against the release's own commit before using it.
 
 | | After release 1 | After release 2 |
@@ -689,8 +690,17 @@ mkdir -p ~/philo-release2-<date> && cd ~/philo-release2-<date>
 printf "D='%s'\n" "$PWD" > vars.sh    # paths and names only, never a secret
 printf "IMG='%s'\n" 'ghcr.io/oberonlogistics/philo:<tag>@sha256:<digest>' >> vars.sh
 grep '^SECRET_FILE=' ~/philo-cutover-<release 1 date>/vars.sh >> vars.sh   # the path, for §5's rebuild
+grep '^IMG=' ~/philo-cutover-<release 1 date>/vars.sh | sed 's/^IMG=/R1_IMG=/' >> vars.sh   # release 1's image
 cp ~/philo-cutover-<release 1 date>/wait.sh .
+. ./vars.sh
+[ "$(docker inspect --format '{{.Config.Image}}' <philo container>)" = "$R1_IMG" ] && echo r1   # r1
+docker ps -a --format '{{.Names}}' | grep -cx '<philo container>-r1'                          # 0
 ```
+
+If the first check doesn't print `r1`, production isn't running release 1's image: stop. `<philo container>`, the
+data volume, the launch type and the full launch are §3's record, updated by §7 step 4 (the image is release 1's,
+and `--env-file /<deploy dir>/philo-ol.env` is part of the launch). Release 1's `<philo container>-stock` (or
+`compose.yaml.stock`) may still exist if §9 hasn't deleted it: leave it alone, it has `--restart=no`.
 
 Keep a `log.md` here, as §1 says.
 
@@ -719,7 +729,16 @@ Notify, or the bell can't read the feed. Any other answer: stop and tell the mai
 
 ### Release 2: the environment it adds
 
-Add these to release 1's `philo-ol.env.public` (§5), then rebuild `philo-ol.env` with the secret as §5 does. Keep
+First keep release 1's two files, in the deploy dir, for the rollbacks. Production's container read
+`philo-ol.env` when it was created, so editing the files doesn't change it until upgrade step 2:
+
+```sh
+install -m 600 -p /<deploy dir>/philo-ol.env.public /<deploy dir>/philo-ol.env.public.r1
+install -m 600 -p /<deploy dir>/philo-ol.env /<deploy dir>/philo-ol.env.r1        # holds the secret: never print it
+stat -c '%a %U %n' /<deploy dir>/philo-ol.env*.r1                                  # 600 <deploy user>, both
+```
+
+Then add these to `philo-ol.env.public` (§5), and rebuild `philo-ol.env` with the secret as §5 does. Keep
 everything release 1 set. `<tag>` is the release-2 tag.
 
 ```sh
@@ -789,7 +808,7 @@ differs from §6 is written here. As in §6, there is no sign-in on the copy.
    ```
    `"$D/today.env"` is "today's env file" in §6's commands.
 2. **Set up the copy** with §6's block as written. Its `grep '^PHILO_OIDC_'` now picks up release 2's identity
-   lines: `grep -c '_SCOPE=' "$D/identity.env"` is 3, and `grep -cx 'PHILO_OIDC_AGENT_CLIENT_IDS=\*' "$D/identity.env"`
+   lines: `grep -cE '^PHILO_OIDC_(USER|ADMIN|AGENT)_SCOPE=' "$D/identity.env"` is 3, and `grep -cx 'PHILO_OIDC_AGENT_CLIENT_IDS=\*' "$D/identity.env"`
    is 1.
 3. **Before the first boot**, with §6's helper and the container stopped:
    - `PRAGMA integrity_check` is `ok`;
@@ -829,12 +848,34 @@ differs from §6 is written here. As in §6, there is no sign-in on the copy.
       sqlite3 -readonly /backup/philo-prerelease2.db "PRAGMA integrity_check; SELECT count(*), max(created_at) FROM leads;"'
    ```
    Expect `ok`, write the count to the log, and copy the three files off the host as §7 step 2 does.
-2. Set the release-2 tag and digest, pass the new `philo-ol.env`, start it, and wait: `sh "$D/wait.sh" <philo container>`.
+2. **Swap the container**, as §7 steps 3–4 do, so there is never a second writer. Intake is down from the stop until
+   the wait passes.
+   - **`docker run` launch:** stop release 1's container, check it, and set it aside for the image rollback:
+     ```sh
+     . ~/philo-release2-<date>/vars.sh
+     docker stop <philo container>
+     [ "$(docker inspect --format '{{.Config.Image}}' <philo container>)" = "$R1_IMG" ] &&
+       docker rename <philo container> <philo container>-r1 &&
+       docker update --restart=no <philo container>-r1
+     ```
+     If the check fails, stop: run `docker start <philo container>` and the bounded wait, and tell the maintainer.
+     Otherwise start the new container under the **original name** with release 1's launch exactly as recorded
+     (§3, with §7 step 4's `--env-file /<deploy dir>/philo-ol.env`), changing only the image to `"$IMG"`. Same
+     volume, ports, restart policy and network. The env file now holds release 2's lines.
+   - **Compose launch:** don't rename. Copy the compose file to `compose.yaml.r1` next to it, check that release 1's
+     image is still present (`docker image inspect "$R1_IMG" >/dev/null && echo ok`), and run no
+     `docker image prune` until release 2 is staying. Edit only `image:` in the compose file, to the `IMG` value
+     from `vars.sh` typed out, then `docker compose up -d` with the project and file recorded in §3. Compose stops
+     the old container before it creates the new one.
+
+   Then the bounded wait: `sh "$D/wait.sh" <philo container>`. If it fails, read only
+   `docker logs <philo container> 2>&1 | grep -iE 'error|config'`, under the data rules, and go to the image
+   rollback below.
 3. The maintainer signs in to the PWA through OL Auth. Check: the top bar shows the bell, the app switcher (with the
    Philo tile current) and the shared account menu, and not Philo's own; Server settings is reachable from the
    account menu (so `id=1` is an admin); the theme picked in the shared menu sticks after a reload; an existing API
-   key answers 200 (`curl -s -o /dev/null -w '%{http_code}\n' -H 'Authorization: Bearer <key>' $O/api/v1/funnels`
-   or any read the key may make); `/sign-out` signs out.
+   key answers 200 (`curl -s -o /dev/null -w '%{http_code}\n' -H 'Authorization: Bearer <key>'
+   https://philo.oberonlogistics.com/api/v1/funnels`, or any read the key may make); `/sign-out` signs out.
 4. The browser console on a signed-in page shows no `Content-Security-Policy` violation and no "Philo: the host
    script failed" line.
 5. A second person from `philo-users` signs in and gets a user's view (no Server settings).
@@ -845,47 +886,131 @@ differs from §6 is written here. As in §6, there is no sign-in on the copy.
 
 ### Release 2: rollback
 
-The image is compatible with release 1's env, so most rollbacks are an env change and a restart. Removing the role
-scopes once release 2 has created accounts is the exception: it may need a data step (below). Prefer the narrowest
-rollback that fixes the trouble.
+The image is compatible with release 1's env, so most rollbacks are an env change on the same image. Removing the
+role scopes once release 2 has created accounts is the exception: it needs the account check and may need a data
+step (below). Prefer the narrowest rollback that fixes the trouble.
+
+**An env change means recreating the container.** Docker reads `--env-file` only when it creates a container, so
+`docker restart` keeps the old env. Each env rollback below edits `/<deploy dir>/philo-ol.env.public`, rebuilds
+`philo-ol.env` with §5's secret command, and then recreates on the same image:
+
+- **`docker run` launch:**
+  ```sh
+  . ~/philo-release2-<date>/vars.sh
+  docker stop <philo container>
+  [ "$(docker inspect --format '{{.Config.Image}}' <philo container>)" = "$IMG" ] && docker rm <philo container>
+  ```
+  If the check fails, stop: that is not the container upgrade step 2 started. Otherwise start it again under the
+  original name with upgrade step 2's launch (image `"$IMG"`). Leave `<philo container>-r1` alone.
+- **Compose launch:** `docker compose up -d --force-recreate` with the project and file recorded in §3.
+
+Then the bounded wait, `sh "$D/wait.sh" <philo container>`. If it fails, go to the image rollback.
 
 - **Chrome trouble only:** remove the five chrome lines, all together (`PHILO_WEB_HOST_CONFIG`,
   `PHILO_WEB_HOST_TOKEN_RESOURCES` and `PHILO_WEB_ASSET_ORIGINS` without `PHILO_WEB_HOST_SCRIPT_URL` are a startup
-  error; `PHILO_WEB_CONNECT_ORIGINS` alone is harmless but no longer needed). Restart. Philo's own menu is back and
-  the policy is release 1's.
-- **Agent trouble only:** remove `PHILO_OIDC_AGENT_CLIENT_IDS` and restart. Self-registered agents are refused from
+  error; `PHILO_WEB_CONNECT_ORIGINS` alone is harmless but no longer needed), and recreate. Philo's own menu is back
+  and the policy is release 1's.
+- **Agent trouble only:** remove `PHILO_OIDC_AGENT_CLIENT_IDS` and recreate. Self-registered agents are refused from
   the next request; API keys keep working.
 - **Roles trouble: fix it at OL Auth first, with the scopes still on.** Someone removed from both roles is refused
   (`insufficient_scope`) from their first token without a Philo scope, in the PWA and through agents, and their stored
   role lapses after 30 days. A wrong role is corrected by changing the OL Auth role and signing in again.
-- **Roles trouble that OL Auth can't fix:** also remove the three `PHILO_OIDC_*_SCOPE` lines, together (one without
-  the other is a startup error), and `PHILO_OIDC_AGENT_CLIENT_IDS` (`*` needs both scopes). Restart. The boot line
-  ends `, one account` again. **This does not shut out accounts created on release 2.** In one-account mode a subject
-  that is already bound still signs in with the role stored on its account, its API keys keep working, scopes are
-  ignored and the 30-day rule is off (`findOrProvisionOnlyAccount` in `external-idp.ts`, `hasAccess` in
-  `access.ts`). Another `philo-admins` member would stay admin indefinitely.
+- **Roles trouble that OL Auth can't fix:** the env change removes the three `PHILO_OIDC_*_SCOPE` lines, together
+  (one without the other is a startup error), and `PHILO_OIDC_AGENT_CLIENT_IDS` (`*` needs both scopes). The boot
+  line then ends `, one account` again. **That alone does not shut out accounts created on release 2.** In
+  one-account mode a subject that is already bound still signs in with the role stored on its account, its API keys
+  keep working, scopes are ignored and the 30-day rule is off (`findOrProvisionOnlyAccount` in `external-idp.ts`,
+  `hasAccess` in `access.ts`). Another `philo-admins` member would stay admin indefinitely. And one-account mode never
+  promotes, so an `id=1` demoted on release 2 would leave nobody able to reach Server settings.
 
   This build can't deactivate anyone: people management (ADR-0012) isn't built, so neither the UI nor the API sets
-  `disabled_at`. So, with the container stopped, count the other accounts:
-  ```sh
-  docker run --rm -v <data volume>:/data alpine sh -c 'apk add --no-cache sqlite >/dev/null &&
-    sqlite3 -readonly /data/philo.db "SELECT count(*) FROM users WHERE id <> 1"'
-  ```
-  If it is 0, the env change is enough. Otherwise removing the scopes needs a **data step, only with the maintainer's OK** and after a fresh backup
-  (the upgrade's step 1, into a new file name). Write down `date +%s%3N` as **T1**, then, with the container still
-  stopped:
-  ```sh
-  docker run --rm -v <data volume>:/data alpine sh -c 'apk add --no-cache sqlite >/dev/null && sqlite3 -bail /data/philo.db "
-    UPDATE users SET disabled_at = CAST(unixepoch('\''subsec'\'') * 1000 AS integer) WHERE id <> 1 AND disabled_at IS NULL;
-    SELECT changes();" && chown -R 1000:1000 /data'
-  ```
-  `disabled_at` is milliseconds (`timestamp_ms` in `schema.ts`; migration 0013 writes `role_confirmed_at` the same
-  way). `SELECT changes()` prints the count from above. `hasAccess` then refuses those accounts' sign-ins, API keys
-  and push. Undo it once the scopes are back with
-  `UPDATE users SET disabled_at = NULL WHERE id <> 1 AND disabled_at >= <T1>`, which leaves anyone offboarded earlier
-  (below) disabled. People management (`up/user-management`, in progress) replaces this data step with its deactivation API once it lands in the fork; this runbook is updated then.
-- **The image itself fails:** set release 1's tag and digest back, with release 1's `philo-ol.env`. If the release
-  carried a migration after all, §8 R2's reasoning (back to stock) applies instead; check `__drizzle_migrations` first.
+  `disabled_at`. So do it in this order, and start the container only at the end:
+
+  1. **Stop.** `docker stop <philo container>` (under Compose, `docker compose stop` with §3's project and file).
+     Check it is the container upgrade step 2 started:
+     `docker inspect --format '{{.Config.Image}}' <philo container>` prints the `IMG` value from `vars.sh`.
+     Otherwise stop and ask.
+  2. **The account check**, read-only, with the container stopped:
+     ```sh
+     docker run --rm -v <data volume>:/data alpine sh -c 'apk add --no-cache sqlite >/dev/null && sqlite3 -readonly /data/philo.db "
+       SELECT count(*) FROM users WHERE id = 1 AND role = '\''admin'\'' AND disabled_at IS NULL;
+       SELECT count(*) FROM users WHERE id <> 1 AND disabled_at IS NULL;
+       SELECT count(*), max(created_at) FROM __drizzle_migrations;" && chown -R 1000:1000 /data'
+     ```
+     Write the three lines to the log. The first is **A**, the second **N**, and the third must be
+     `14|1795723669355` (anything else means a migration came after all: stop and ask).
+     - **A is 1 and N is 0:** no data step. Go to step 5.
+     - **A is 0:** `id=1` was demoted, most likely by a sign-in without `philo-admins`. Prefer the OL Auth fix while
+       the scopes are still on: start the container again unchanged (`docker start <philo container>`, or
+       `docker compose start`, then the bounded wait), have the maintainer add `philo-admins` and sign in to the PWA,
+       which sets admin again (`confirmRole`), and then start over at step 1. Only if that can't be done, step 4's
+       admin write.
+  3. **The OK and a backup.** Step 4's writes run only with the **maintainer's OK**, and only after a fresh backup:
+     upgrade step 1's block with `prerelease2` and `philo-prerelease2.db` replaced by `rollback-<HHMM>` and
+     `philo-rollback-<HHMM>.db`. Expect `ok`, write the count to the log, and copy the three files off the host as
+     there.
+  4. **The data step**, with the container still stopped. Each write prints a count. If it prints anything other than
+     the count named here, stop: the UPDATE has already committed, so restore the backup just taken
+     (DEPLOYMENT.md § Restoring the online backup, with the container stopped), or ask.
+     - **The admin write**, only if A is 0 and OL Auth can't fix it. It prints `1`:
+       ```sh
+       docker run --rm -v <data volume>:/data alpine sh -c 'apk add --no-cache sqlite >/dev/null && sqlite3 -bail /data/philo.db "
+         UPDATE users SET role = '\''admin'\'' WHERE id = 1;
+         SELECT changes();" && chown -R 1000:1000 /data'
+       ```
+     - **The disabling write**, if N is more than 0. Write down `date +%s%3N` as **T1**, run this, then write down
+       `date +%s%3N` as **T2**. It prints N:
+       ```sh
+       docker run --rm -v <data volume>:/data alpine sh -c 'apk add --no-cache sqlite >/dev/null && sqlite3 -bail /data/philo.db "
+         UPDATE users SET disabled_at = CAST(unixepoch('\''subsec'\'') * 1000 AS integer) WHERE id <> 1 AND disabled_at IS NULL;
+         SELECT changes();" && chown -R 1000:1000 /data'
+       ```
+       `disabled_at` is milliseconds (`timestamp_ms` in `schema.ts`; migration 0013 writes `role_confirmed_at` the
+       same way). `hasAccess` then refuses those accounts' sign-ins, API keys and push. Write T1, T2 and N to the log.
+  5. **The env change and the start.** Edit the env and rebuild it, as above. Then, under `docker run`,
+     `docker rm <philo container>` (step 1 checked it) and start it with upgrade step 2's launch; under Compose,
+     `docker compose up -d --force-recreate`. Then the bounded wait, and the boot line
+     (`docker logs <philo container> 2>&1 | grep -E '^  identity'`) ends `, one account`.
+
+  **Undo the disabling write** once the scopes are back on, with the same OK, a new backup and the container
+  stopped: `UPDATE users SET disabled_at = NULL WHERE id <> 1 AND disabled_at BETWEEN <T1> AND <T2>; SELECT
+  changes();` prints N, with step 4's rule for anything else. The bounds leave out anyone offboarded (below) before
+  T1 or after T2. People management (`up/user-management`, in progress) replaces this data step with its deactivation
+  API once it lands in the fork; this runbook is updated then.
+- **The image itself fails**, or upgrade step 2's wait failed: back to release 1's image, env and container. Release
+  1's image runs one-account mode too, so the accounts need the same check.
+  1. **Stop.** `docker stop <philo container>` (under Compose, `docker compose stop`). This also stops a
+     crash-looping container.
+  2. **The roles rollback's steps 2 to 4**: the account check, then, if needed, the OK, a backup and the data step.
+     The migration line decides first: anything other than `14|1795723669355` means §8 R2's reasoning applies, so
+     stop and ask. If A is 0, the OL Auth fix needs release 2 to boot; if it doesn't, use the admin write. If the
+     wait in upgrade step 2 failed, nobody signed in on release 2, and the check should find A 1 and N 0.
+  3. **Release 1's env files** back, from the copies:
+     ```sh
+     . ~/philo-release2-<date>/vars.sh
+     install -m 600 -p /<deploy dir>/philo-ol.env.public.r1 /<deploy dir>/philo-ol.env.public
+     ```
+     Rebuild `philo-ol.env` from it with §5's secret command, then
+     `cmp -s /<deploy dir>/philo-ol.env /<deploy dir>/philo-ol.env.r1 && echo same` prints `same`. If it doesn't,
+     the secret has changed since release 1 (`<philo container>-r1` still holds the old one): stop and tell the
+     maintainer.
+  4. **Release 1's container** back:
+     - **`docker run` launch:** check both names, then swap them back:
+       ```sh
+       . ~/philo-release2-<date>/vars.sh
+       [ "$(docker inspect --format '{{.Config.Image}}' <philo container>)" = "$IMG" ] && docker rm <philo container>
+       [ "$(docker inspect --format '{{.Config.Image}}' <philo container>-r1)" = "$R1_IMG" ] &&
+         docker rename <philo container>-r1 <philo container> &&
+         docker update --restart=<the policy recorded in §3> <philo container> &&
+         docker start <philo container>
+       ```
+       If either check fails, stop.
+     - **Compose launch:** put `compose.yaml.r1` back in place of the compose file and `docker compose up -d` with
+       the project and file recorded in §3.
+
+     Then the bounded wait, `sh "$D/wait.sh" <philo container>`. Check that
+     `docker inspect --format '{{.Config.Image}}' <philo container>` prints the `R1_IMG` value and that the boot line
+     ends `, one account`. If the wait fails, stop and tell the maintainer.
 
 Then the upgrade's steps 3, 4 and 7 again: expecting Philo's own menu after a chrome, roles or image rollback, and the
 shared chrome still after an agent-only one.
@@ -894,6 +1019,13 @@ shared chrome still after an agent-only one.
 
 To remove someone at once, remove their roles at OL Auth. Their PWA and agent access ends with their current tokens,
 but their Philo API keys still work for up to 30 days (until `role_confirmed_at` lapses, `hasAccess`). For an
-immediate cut-off, use the rollback's `disabled_at` data step for that one account, with the same OK, backup and
-stopped container: `WHERE email = '<their address, in lower case>' AND id <> 1 AND disabled_at IS NULL` in place of
-its `WHERE`, and `SELECT changes()` must print 1. Do this until people management lands.
+immediate cut-off, until people management lands, use the rollback's disabling write for that one account. Intake is
+down from step 1 to step 4:
+
+1. **Stop**, as the roles rollback's step 1 does.
+2. **The OK and a backup**, as its step 3 does.
+3. **The write.** Write down `date +%s%3N` in the log as the offboarding time (not the address: no row content in
+   the log). Run the disabling write with `WHERE email = '<their address, in lower case>' AND id <> 1 AND disabled_at
+   IS NULL` in place of its `WHERE`. `SELECT changes()` must print 1, with step 4's rule for anything else.
+4. **Start it again unchanged**: `docker start <philo container>` (under Compose, `docker compose start`), then the
+   bounded wait.
