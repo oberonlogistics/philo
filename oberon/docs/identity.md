@@ -287,8 +287,9 @@ ignored: unknown env names are not read, and `PHILO_OIDC_AGENT_CLIENT_IDS=*` is 
 which admits no agent (`config.ts:165-168`, `external-idp.ts:122`). Startup succeeds, there is no scope check, and the
 role analysis of §4 does not hold.
 
-**Release 1** ([`oberon/CUTOVER.md`](../CUTOVER.md), decided 2026-11-26) runs on `ol-v0.6.0-1`, without
-rows 10 and 11. It sets the issuer, client id, audience, scope and resource lines above and **none** of
+**Release 1** ([`oberon/CUTOVER.md`](../CUTOVER.md), decided 2026-11-26) runs on `ol-v0.7.0-1`. That
+image contains row 10 (philo-crm/philo#77) but not row 11, and release 1 leaves row 10's variables unset, so it
+behaves as an image without row 10 does. It sets the issuer, client id, audience, scope and resource lines above and **none** of
 `PHILO_OIDC_USER_SCOPE`, `PHILO_OIDC_ADMIN_SCOPE`, `PHILO_OIDC_AGENT_SCOPE` or `PHILO_OIDC_AGENT_CLIENT_IDS`. So:
 
 - only the one operator account (`id=1`) binds, by verified email (§4.1); every other OL person is refused;
@@ -325,8 +326,8 @@ that id. Nothing else references the built-in IdP. The move keeps the same row, 
 `users.external_subject = "https://auth.oberonlogistics.com <sub>"`, and loses nothing. MU-a's migration makes
 `id=1` an admin.
 
-**Which release this holds for.** On release 1 (§3, without rows 10 and 11), roles are not read from scopes: boot
-passes `ROLES_ON_ACCOUNTS`, so `id=1` stays the admin the migration made it whatever its token says, and the 30-day
+**Which release this holds for.** On release 1 (§3, with row 10's variables unset), roles are not read from scopes: boot's
+`accessPolicyOf` gives `rolesFromIdp: false` (the boot line ends `, one account`), so `id=1` stays the admin the migration made it whatever its token says, and the 30-day
 rule does not apply (`access.ts:13-25`). The role analysis below, and in §4.4, needs an image that contains rows 10
 and 11. From that release on, `id=1`'s role is whatever the operator's next PWA token says, so **the operator must
 hold the Philo admins role (§5) before the first sign-in on that release**, or `id=1` becomes a user. `CUTOVER.md`

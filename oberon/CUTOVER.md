@@ -1,7 +1,7 @@
 # Cutover runbook: production onto the fork, release 1
 
 The steps for switching `https://philo.oberonlogistics.com` from the stock upstream image to the fork's
-`ol-v0.6.0-1`. It is written for an agent running production on the maintainer's behalf, under the waiver in §1.
+`ol-v0.7.0-1`. It is written for an agent running production on the maintainer's behalf, under the waiver in §1.
 Read all of it before the first command. The reasons behind the steps are in [`DEPLOY.md`](DEPLOY.md); this page is
 the steps.
 
@@ -9,12 +9,12 @@ the steps.
 
 | | Before | After release 1 |
 |---|---|---|
-| Image | `ghcr.io/philo-crm/philo:0.5.1` (stock) | `ghcr.io/oberonlogistics/philo:ol-v0.6.0-1@sha256:<digest>` |
+| Image | `ghcr.io/philo-crm/philo:0.5.1` (stock) | `ghcr.io/oberonlogistics/philo:ol-v0.7.0-1@sha256:<digest>` |
 | Sign-in | Philo's built-in IdP (password) | OL Auth, for the one existing account (`id=1`), which binds by verified email |
 | Notifications | Email and web push | The same, **plus** each new lead, added lead and stage move in the OL Notify feed for the Philo users role |
 | Data | The production volume | **The same volume**, migrated in place by `0013_user_roles` (adds `role`, `role_confirmed_at`, `disabled_at` to `users`) |
 
-**Not in release 1.** These come later as ordinary upgrades (`ol-v0.6.0-2` or a later version: DEPLOY.md §7), with no
+**Not in release 1.** These come later as ordinary upgrades (`ol-v0.7.0-2` or a later version: DEPLOY.md §7), with no
 new window:
 
 - the shared chrome (app switcher, account menu, bell in Philo's top bar), which waits on the host-script seam
@@ -190,7 +190,7 @@ EOF
 
 **GATE 2: the maintainer approves pushing the tag.**
 
-From a checkout of fork `main`, at the v0.6.0 sync (#15) or later:
+From a checkout of fork `main`, at the v0.7.0 sync or later:
 
 ```sh
 git fetch origin
@@ -198,27 +198,27 @@ git fetch https://github.com/philo-crm/philo.git refs/tags/v0.5.1:refs/tags/v0.5
 git rev-parse 'v0.5.1^{commit}'                                              # must resolve
 git diff --name-only v0.5.1 origin/main -- 'packages/server/drizzle/*.sql'   # expect exactly 0013_user_roles.sql
 git ls-tree --name-only origin/main packages/server/drizzle/ | grep -c '\.sql$'   # expect 14
-git show origin/main:package.json | grep '"version"'                         # expect 0.6.0
-git tag -a ol-v0.6.0-1 -m "ol-v0.6.0-1" origin/main
-git push origin ol-v0.6.0-1        # this one tag only; never --tags
+git show origin/main:package.json | grep '"version"'                         # expect 0.7.0
+git tag -a ol-v0.7.0-1 -m "ol-v0.7.0-1" origin/main
+git push origin ol-v0.7.0-1        # this one tag only; never --tags
 ```
 
 If the diff lists anything but `0013_user_roles.sql`, stop: §8's R2 covers only that migration. Never push the
 fetched `v0.5.1` tag.
 
 The **Oberon release image** workflow (`ol-release.yml`) runs on the tag. When it passes, copy the
-`ghcr.io/oberonlogistics/philo:ol-v0.6.0-1@sha256:…` line from its job summary into the log. That reference, with its
+`ghcr.io/oberonlogistics/philo:ol-v0.7.0-1@sha256:…` line from its job summary into the log. That reference, with its
 digest, is the only image production may run. Never use `:latest`, `:edge` or a semver tag from this package.
 
 On the production host, check the image without the data volume:
 
 ```sh
-printf "IMG='%s'\n" 'ghcr.io/oberonlogistics/philo:ol-v0.6.0-1@sha256:<digest>' >> ~/philo-cutover-<date>/vars.sh
+printf "IMG='%s'\n" 'ghcr.io/oberonlogistics/philo:ol-v0.7.0-1@sha256:<digest>' >> ~/philo-cutover-<date>/vars.sh
 . ~/philo-cutover-<date>/vars.sh
 docker pull "$IMG"
 docker run -d --name philo-imgcheck -p 127.0.0.1:<free port>:3000 "$IMG"
 sh "$D/wait.sh" philo-imgcheck                                                        # running healthy
-curl -s http://127.0.0.1:<free port>/version                                          # name philo, version 0.6.0
+curl -s http://127.0.0.1:<free port>/version                                          # name philo, version 0.7.0
 curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:<free port>/oberon/philo-host.js   # 200
 curl -sI http://127.0.0.1:<free port>/ | grep -i content-security-policy              # present
 docker stop philo-imgcheck && docker rm philo-imgcheck
@@ -260,8 +260,10 @@ grep -c '^OL_NOTIFY_CLIENT_SECRET=.' /<deploy dir>/philo-ol.env   # 1
 
 **Leave unset in release 1:**
 
-- `PHILO_OIDC_USER_SCOPE`, `PHILO_OIDC_ADMIN_SCOPE`, `PHILO_OIDC_AGENT_SCOPE` and `PHILO_WEB_HOST_*`: this release
-  doesn't read them (identity spec §3, release 1).
+- `PHILO_OIDC_USER_SCOPE`, `PHILO_OIDC_ADMIN_SCOPE` and `PHILO_OIDC_AGENT_SCOPE`: this image reads them
+  (philo-crm/philo#77), but with them unset it keeps the single-account behaviour release 1 relies on (identity spec
+  §3, release 1). Setting them is the later release's change, with its own role-confirmation step.
+- `PHILO_WEB_HOST_*` and `PHILO_WEB_ASSET_ORIGINS`: this image reads them too (#78), but the chrome isn't in release 1.
 - `PHILO_OIDC_AGENT_CLIENT_IDS`: this release would take `*` as a literal client id, not as "any client".
 - `PHILO_WEB_CONNECT_ORIGINS`: OL Auth's token endpoint is on its issuer's origin, which the CSP already allows.
 - `PHILO_APP_URL` and `PHILO_MCP_URL`: their defaults come from `PHILO_PUBLIC_BASE_URL`.
@@ -315,7 +317,7 @@ There is no `--rm`, so a container that exits stays readable. If the wait fails,
 `docker logs philo-envcheck` (a config error names the variable, not its value), `docker rm -f philo-envcheck`, and
 stop. The log must show these lines:
 
-- `identity:        external IdP https://auth.oberonlogistics.com (operator client philo)`;
+- `identity:        external IdP https://auth.oberonlogistics.com (operator client philo), one account`;
 - the `oberon notify: posting lead events as philo to https://notify.oberonlogistics.com, for role philo-users,
   linking to https://philo.oberonlogistics.com` line, with no "half configured" error.
 
@@ -375,7 +377,7 @@ Run every `sqlite3` below with the container stopped, in the alpine helper on th
    `SELECT count(*), max(created_at) FROM leads` as **L0**.
 2. **Boot `"$IMG"` with `identity.env`.** The wait reports `running healthy`. The boot log
    (`docker logs philo-scratch 2>&1 | grep -E '^  (identity|rate limits|note: rate limits)'`) shows
-   `identity:        external IdP https://auth.oberonlogistics.com (operator client philo)`, and the rate-limit line
+   `identity:        external IdP https://auth.oberonlogistics.com (operator client philo), one account`, and the rate-limit line
    matches §3's baseline. Drizzle logs nothing when it migrates, so check the migration by query, after stopping:
    - `SELECT count(*), max(created_at) FROM __drizzle_migrations` is `14|1795723669355` (0013's `when` in
      `packages/server/drizzle/meta/_journal.json`);
@@ -441,7 +443,7 @@ Run every `sqlite3` below with the container stopped, in the alpine helper on th
    ```sh
    . ~/philo-cutover-<date>/vars.sh
    docker compose -p philo-scratch -f "$D/compose.scratch-fork.yaml" up -d
-   sh "$D/wait.sh" philo-scratch && curl -s http://127.0.0.1:<port>/version     # 0.6.0
+   sh "$D/wait.sh" philo-scratch && curl -s http://127.0.0.1:<port>/version     # 0.7.0
    docker compose -p philo-scratch -f "$D/compose.scratch-fork.yaml" stop
    ```
    Apply step 6's check and reversal again, then:
@@ -492,13 +494,13 @@ as the new container is healthy, and Caddy isn't touched.
    ( umask 077; mkdir -p "$D/precutover" )
    docker run --rm -v <data volume>:/data -v "$D/precutover":/backup alpine sh -c \
      'apk add --no-cache sqlite >/dev/null &&
-      sqlite3 /data/philo.db ".backup /backup/philo-precutover-ol-v0.6.0-1.db" &&
+      sqlite3 /data/philo.db ".backup /backup/philo-precutover-ol-v0.7.0-1.db" &&
       cp /data/oidc-signing-key.json /data/vapid-keys.json /backup/ &&
-      sqlite3 -readonly /backup/philo-precutover-ol-v0.6.0-1.db "PRAGMA integrity_check; SELECT count(*), max(created_at) FROM leads;"'
+      sqlite3 -readonly /backup/philo-precutover-ol-v0.7.0-1.db "PRAGMA integrity_check; SELECT count(*), max(created_at) FROM leads;"'
    ```
    - `PRAGMA integrity_check` prints `ok`.
    - Write the lead count and `max(created_at)` to the log.
-   - Copy the three files (`philo-precutover-ol-v0.6.0-1.db`, `oidc-signing-key.json`, `vapid-keys.json`) to the
+   - Copy the three files (`philo-precutover-ol-v0.7.0-1.db`, `oidc-signing-key.json`, `vapid-keys.json`) to the
      off-host destination from §2 and check the copy's checksum. **Don't go on until the copy is verified.**
 
    **Abort:** production is untouched until step 3. If anything in steps 1–2 fails, or step 2 isn't done by
@@ -526,7 +528,7 @@ as the new container is healthy, and Caddy isn't touched.
    - a config error that names an `OL_` or `PHILO_OIDC_` variable means **R1**;
    - anything else, including no matching line, means **R2**.
 5. Check the boot log (`docker logs <philo container> 2>&1 | grep -E '^  (identity|rate limits|note: rate limits)|oberon notify'`):
-   - `identity:        external IdP https://auth.oberonlogistics.com (operator client philo)`;
+   - `identity:        external IdP https://auth.oberonlogistics.com (operator client philo), one account`;
    - the rate-limit line is the same as §3's baseline (the `PHILO_TRUSTED_PROXY=true` line if today's launch sets it:
      D9 is still open);
    - the `oberon notify: posting lead events…` line, with no Notify error.
@@ -588,7 +590,7 @@ boot. Tell the maintainer when R2 starts, and again if it passes that target.
 
 1. `docker stop <philo container>` (this also stops a crash-looping container).
 2. Make an online backup of the **new** database, with §7 step 2's command but into `"$D/postcutover"` and the file
-   `philo-postcutover-ol-v0.6.0-1.db`. Keep it.
+   `philo-postcutover-ol-v0.7.0-1.db`. Keep it.
 3. Read what the migration left, on the production volume, with Philo stopped:
    ```sh
    docker run --rm -v <data volume>:/data alpine sh -c 'apk add --no-cache sqlite >/dev/null && sqlite3 -bail /data/philo.db "
