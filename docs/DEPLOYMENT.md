@@ -93,6 +93,10 @@ stages, email templates) lives in the database and is edited in the app.
 | `PHILO_OIDC_AGENT_SCOPE` | `<user scope> offline_access` with the role scopes, else unset | What the MCP endpoint's protected-resource metadata tells agents to ask the provider for. |
 | `PHILO_OIDC_RESOURCE` | empty | Comma-separated [RFC 8707](https://www.rfc-editor.org/rfc/rfc8707) resource indicators (absolute URLs) the PWA sends with its sign-in and token requests, for a provider that picks the token's audience from them. |
 | `PHILO_WEB_CONNECT_ORIGINS` | empty | Comma-separated extra origins added to the PWA's `connect-src`, for a provider whose token or revocation endpoint is on another origin. Each must be a bare `https://` origin (`http://` only for `localhost` and `127.0.0.1`): a path, wildcard or CSP keyword is a startup error. See [Content-Security-Policy](#content-security-policy). |
+| `PHILO_WEB_HOST_SCRIPT_URL` | unset | An operator script the PWA loads after sign-in, for shared top-bar chrome. An absolute `https://` URL (`http://` only for `localhost` and `127.0.0.1`), or a path on the PWA's own origin such as `/host/chrome.js`. The path names one file: it may not end in `/` or hold `%`. **It runs with the page's full authority.** See [Host script](#host-script). |
+| `PHILO_WEB_HOST_CONFIG` | `{}` | A JSON object handed to the host script as `ctx.config`. Public, since anyone can read it, so no secrets. Anything but a JSON object is a startup error. |
+| `PHILO_WEB_HOST_TOKEN_RESOURCES` | empty | Comma-separated resource indicators (absolute URLs) the host script may ask the external IdP for a token for. Empty means it gets none. Philo's own audience is a startup error, and so is a non-empty list without `PHILO_OIDC_AUDIENCE`: with no audience Philo's API checks none, so any token the host got could act there. |
+| `PHILO_WEB_ASSET_ORIGINS` | empty | Comma-separated sources the host script's own code, styles, fonts and images load from. Each is an `https://` origin, optionally with a path prefix ending in `/` (`http://` only for `localhost` and `127.0.0.1`). A query, wildcard or CSP keyword is a startup error. See [Host script](#host-script). |
 
 ### `PHILO_PUBLIC_BASE_URL` earns its keep
 
@@ -318,6 +322,91 @@ instead of `'none'`. Otherwise the extra-token frame is blocked, and the
 operator's host script gets `null` from `getToken`. A
 static host that cannot set headers can't apply `frame-ancestors`, so the
 PWA could then be framed by other sites.
+
+### Host script
+
+Set `PHILO_WEB_HOST_SCRIPT_URL` and the PWA loads that script once a person
+is signed in, and hands it an empty element at the right end of the top bar
+plus a small context: who is signed in and with what role, Philo's router,
+sign-out and theme, its own account-menu entries, and tokens for the
+resources in `PHILO_WEB_HOST_TOKEN_RESOURCES`. The contract is in
+[DESIGN.md](DESIGN.md#host-chrome) and
+[ADR-0013](adr/0013-operator-host-script.md). With the variable unset,
+nothing loads and nothing below applies.
+
+**What you are trusting.** The script runs in the page with the same
+authority as Philo's own code. It can read the refresh token in
+`localStorage`, call the API as whoever is signed in, read and change
+anything on screen, and, in an admin's session, create webhooks or API keys
+that keep sending data out after the script is fixed. Philo does not sandbox
+it, and the Content-Security-Policy below is no backstop: it limits what code
+can load, not what can leave (a navigation, `window.open` and WebRTC are
+not restricted by it). Set the variable only for a script you trust as much
+as Philo itself, and trust everyone who can change that script just as much.
+
+**Serve it from the PWA's own origin** when you can, so it changes only when
+your deployment does. A script on another origin trusts that origin's whole
+supply chain on every page load. Two ways to put a file beside the image's
+PWA without rebuilding it:
+
+- From the reverse proxy in front of Philo: answer `/host/` from a directory
+  of your own and pass everything else through.
+- With the image alone: mount a directory at `/app/apps/web/dist/host`
+  (`-v /srv/philo-host:/app/apps/web/dist/host:ro`). The image serves it
+  under `/host/`, with the PWA's own headers, so
+  `PHILO_WEB_HOST_SCRIPT_URL=/host/chrome.js` needs no change to the policy.
+
+Neither is cached by the service worker. The image answers `/host/` with
+`Cache-Control: no-cache`, so the browser revalidates the script and a
+changed file lands on the next load. A reverse proxy answering `/host/`
+itself should send the same header; without one, browsers cache the file
+for a guessed time, often days. For a script on another origin, that
+origin's headers decide, so give it a `?v=<release>` query or `no-cache`.
+
+**The policy it produces.** A same-origin path needs nothing more: `'self'`
+covers it. An absolute URL is added to `script-src` as that exact URL,
+without its query, never its whole origin. Whatever the script loads from
+elsewhere is listed in `PHILO_WEB_ASSET_ORIGINS`, and each entry is added
+as given to `script-src`, `style-src` and `font-src`, and by its origin
+alone to `img-src`. For example,
+`PHILO_WEB_ASSET_ORIGINS=https://chrome.example.com/v1/` lets the script
+load `https://chrome.example.com/v1/menu.js` and
+`https://chrome.example.com/v1/tokens.css`, but not
+`https://chrome.example.com/uploads/x.js`. The script's own API calls need
+their origins in `PHILO_WEB_CONNECT_ORIGINS`.
+
+A path prefix is defense in depth, not a boundary. Once a request has been
+redirected, the browser checks only its origin, and it matches a path after
+decoding it, so `/v1/..%2Fuploads/x.js` matches `/v1/` on a server that
+decodes `%2F` before routing. List only origins that serve no content their
+users upload, and only prefixes under which nothing redirects. Mirror assets
+from any other origin, an IdP that hosts avatars for example, through a path
+on Philo's own origin instead. The script must work without
+inline script or inline `<style>`; a component can style itself through
+constructable stylesheets or the CSSOM. When the PWA is
+[hosted apart](#running-the-pieces-apart), add the same sources to the
+policy your static host serves.
+
+**Tokens for the script.** `getToken` answers only for a resource listed in
+`PHILO_WEB_HOST_TOKEN_RESOURCES`, compared as an exact string, and only with
+an external IdP that has `PHILO_OIDC_AUDIENCE` set. The `scope` the script
+asks for is passed to the IdP unchecked. If your IdP grants audiences by
+scope rather than by `resource`, make sure no scope the PWA's client may ask
+for grants Philo's audience, or the script can get a token that acts at
+Philo's API.
+
+**What happens when it fails.** Philo's own account menu stays until the
+script takes it over. If the script fails to load, throws, or has not
+mounted within 5 seconds, Philo logs it once to the console and keeps its
+own menu. If the script takes the menu over and then draws nothing, Philo's
+comes back. Offline, the script is simply missing.
+
+**`/sign-out` always signs out.** Whatever the top bar shows, opening
+`/sign-out`, from the address bar or a bookmark, signs the person out and
+returns to the sign-in screen. Tell your people about it if your script
+replaces the account menu. When a host script was loaded, sign-out reloads
+the page, so nothing the script kept in memory carries over to the next
+person.
 
 ## Reverse proxy
 

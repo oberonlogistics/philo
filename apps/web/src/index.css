@@ -1747,3 +1747,21 @@ fieldset.field {
     }
   }
 }
+
+/* ---- host chrome (ADR-0013) -------------------------------------------- */
+
+/*
+ * The operator host script's slot: part of the action group, so it takes its
+ * gap and its narrow-screen layout. Empty — no host, or one that failed — it
+ * takes no room. `:empty` can't see a shadow root, so a slot with one says so
+ * in `data-shadow` (host.ts).
+ */
+.host-slot {
+  display: flex;
+  align-items: center;
+  gap: inherit;
+}
+
+.host-slot:empty:not([data-shadow]) {
+  display: none;
+}

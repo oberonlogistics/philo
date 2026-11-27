@@ -39,6 +39,21 @@ export interface PwaContentSecurityPolicyOptions {
    * they are for fetches, and nothing here frames a token endpoint.
    */
   connectOrigins?: readonly string[] | undefined
+  /**
+   * `PHILO_WEB_HOST_SCRIPT_URL` (ADR-0013), already validated by `loadConfig`.
+   * An absolute URL joins `script-src` as that exact URL without its query,
+   * not its origin; a path on this origin is already covered by `'self'`.
+   */
+  hostScriptUrl?: string | undefined
+  /**
+   * `PHILO_WEB_ASSET_ORIGINS` (ADR-0013): where the host script's own code,
+   * styles and fonts come from. Already validated by `loadConfig` as origins
+   * or origin-and-path-prefix sources. Each joins `script-src`, `style-src`
+   * and `font-src` as given, and its origin alone joins `img-src`. Never
+   * `connect-src` or `frame-src`: the host's API calls go through
+   * `connectOrigins`.
+   */
+  assetOrigins?: readonly string[] | undefined
 }
 
 /** Directive name → its sources, in the order they are served. */
@@ -56,20 +71,36 @@ export function pwaCspDirectives(options: PwaContentSecurityPolicyOptions = {}):
   const issuer = options.issuer === undefined ? [] : [new URL(options.issuer).origin]
   const connect = ["'self'"]
   for (const origin of [...issuer, ...(options.connectOrigins ?? [])]) if (!connect.includes(origin)) connect.push(origin)
+  const script = ["'self'"]
+  if (options.hostScriptUrl !== undefined && !options.hostScriptUrl.startsWith('/')) {
+    const url = new URL(options.hostScriptUrl)
+    script.push(`${url.origin}${url.pathname}`)
+  }
+  const assets = options.assetOrigins ?? []
+  const img = ["'self'"]
+  for (const source of assets) {
+    if (!script.includes(source)) script.push(source)
+    const origin = new URL(source).origin
+    if (!img.includes(origin)) img.push(origin)
+  }
   return {
     // Anything not named below: this origin only.
     'default-src': ["'self'"],
     // The hashed module bundle. No inline script, no eval: index.html is
-    // checked for inline script by apps/web/test/csp-build.test.ts.
-    'script-src': ["'self'"],
+    // checked for inline script by apps/web/test/csp-build.test.ts. With an
+    // operator host script on another origin, that one URL (ADR-0013).
+    'script-src': script,
     // The hashed stylesheet. React's `style` prop would go through the CSSOM,
     // which this does not restrict; the app has no `style` attributes or
-    // `<style>` elements, and the build test holds index.html to that.
-    'style-src': ["'self'"],
-    // The icons. Vite inlines no asset as a `data:` URI in this build.
-    'img-src': ["'self'"],
-    // No web fonts today; the system font stack needs no source.
-    'font-src': ["'self'"],
+    // `<style>` elements, and the build test holds index.html to that. A host
+    // script's stylesheets come from its asset sources.
+    'style-src': ["'self'", ...assets],
+    // The icons. Vite inlines no asset as a `data:` URI in this build. A host
+    // script's images, by origin.
+    'img-src': img,
+    // No web fonts of Philo's own; the system font stack needs no source. A
+    // host script's fonts come from its asset sources.
+    'font-src': ["'self'", ...assets],
     // The API, the built-in IdP and the live feed are all this origin; an
     // external IdP adds its issuer and any `PHILO_WEB_CONNECT_ORIGINS`.
     'connect-src': connect,
