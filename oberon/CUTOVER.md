@@ -202,7 +202,7 @@ REL1_COMMIT=10412667e8d89a611f7b5bd02d9fd4cabe05c18a
 git merge-base --is-ancestor $REL1_COMMIT origin/main && echo on-main                  # on-main
 git diff --name-only v0.5.1 $REL1_COMMIT -- 'packages/server/drizzle/*.sql'           # expect exactly 0013_user_roles.sql
 git ls-tree --name-only $REL1_COMMIT packages/server/drizzle/ | grep -c '\.sql$'           # expect 14
-git show $R1:package.json | grep '"version"'                                # expect 0.7.0
+git show $REL1_COMMIT:package.json | grep '"version"'                                # expect 0.7.0
 git tag -a ol-v0.7.0-1 -m "ol-v0.7.0-1" $REL1_COMMIT
 git push origin ol-v0.7.0-1        # this one tag only; never --tags
 ```
