@@ -1,6 +1,8 @@
 # Deploying the Oberon Logistics fork of Philo
 
-This is a plan. Nothing in it has run against production yet. Items marked **DECIDE** need a human decision. The
+This is a plan. Nothing in it has run against production yet. **The first cutover follows [`CUTOVER.md`](CUTOVER.md)**
+(release 1: image, OL Auth for one account, Notify), and the chrome and several users follow as a later upgrade (D6).
+Items marked **DECIDE** need a human decision. The
 generic operations (data directory, backup, restore, upgrade) are in [`docs/DEPLOYMENT.md`](../docs/DEPLOYMENT.md),
 and this page doesn't repeat them.
 
@@ -381,7 +383,7 @@ Keep both named backups until the next release has run cleanly; then delete them
 | D3 | Backups (§4.1) | **Open.** Existing backups continue; confirm form, off-host destination and retention before the cutover |
 | D4 | Image source (§2) | Decided: GHCR, `ol-v*` from the fork-only workflow, pinned by digest |
 | D5 | Intake during the window (§5) | Decided: at most 15 minutes; the form shows its fallback |
-| D6 | Phases | Decided: one window |
+| D6 | Phases | Decided: one window. **Revised 2026-11-26:** release 1 now ([`CUTOVER.md`](CUTOVER.md)); the chrome, several users and MCP agents follow in a later env-and-image upgrade |
 | D7 | `OL_NOTIFY_ROLE` (§3.3) | Decided: the Philo users role |
 | D8 | Notify's resource identifier (§3.3) | Decided: `https://notify.oberonlogistics.com` |
 | D9 | Caddy's `X-Forwarded-For` handling (§3.2) | Check in the rehearsal |
