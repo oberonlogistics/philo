@@ -163,18 +163,26 @@ record the current launch command (`docker inspect`) before the window, because 
 ### 3.3 The OL environment
 
 Each line names the branch it depends on. A setting whose branch isn't in the deployed tag either has no effect or is
-a startup error, so cut the tag only after all of them are merged into fork `main`.
+a startup error, so cut the tag only after all of them are merged into fork `main`. Release 1 is the exception: it
+sets only the lines already merged, as [`CUTOVER.md`](CUTOVER.md) §5 lists.
+
+The identity lines are a copy of identity spec §3, which is the single source: change them there first, and keep
+this copy identical. On an image without `up/oidc-multi-user` and `up/oidc-any-agent-client`, the scope and agent
+lines are silently ignored, and `*` is read as a literal client id (identity spec §3).
+
+`docker --env-file` takes values literally, so the values have no quotes.
 
 ```sh
-# Identity: identity spec §3, adjusted for ADR-0012 (several users, two roles)
+# Identity: identity spec §3 (the single source; keep identical)
 PHILO_OIDC_ISSUER=https://auth.oberonlogistics.com
 PHILO_OIDC_CLIENT_ID=philo
-PHILO_OIDC_AUDIENCE=https://philo.oberonlogistics.com/api,https://philo.oberonlogistics.com/mcp   # up/oidc-audiences
-PHILO_OIDC_SCOPE="openid email profile offline_access philo:user philo:admin"                    # up/oidc-sign-in-request
-PHILO_OIDC_RESOURCE=https://philo.oberonlogistics.com/api                                         # up/oidc-sign-in-request
-PHILO_OIDC_USER_SCOPE=philo:user                                                                  # up/roles-authz
-PHILO_OIDC_ADMIN_SCOPE=philo:admin                                                                # up/roles-authz
-PHILO_OIDC_AGENT_CLIENT_IDS=*                                                                     # any-agent-client (identity spec U5)
+PHILO_OIDC_AUDIENCE=https://philo.oberonlogistics.com/api,https://philo.oberonlogistics.com/mcp   # up/oidc-audiences (ID-U1, merged)
+PHILO_OIDC_SCOPE=openid email profile offline_access philo:user philo:admin                      # up/oidc-sign-in-request (ID-U3, merged)
+PHILO_OIDC_RESOURCE=https://philo.oberonlogistics.com/api                                         # up/oidc-sign-in-request (ID-U3, merged)
+PHILO_OIDC_USER_SCOPE=philo:user                                                                  # up/oidc-multi-user (MU-b)
+PHILO_OIDC_ADMIN_SCOPE=philo:admin                                                                # up/oidc-multi-user (MU-b)
+PHILO_OIDC_AGENT_SCOPE=philo:user philo:admin offline_access                                      # up/oidc-multi-user (MU-b)
+PHILO_OIDC_AGENT_CLIENT_IDS=*                                                                     # up/oidc-any-agent-client (ID-U5)
 
 # Chrome: chrome spec §3.3                                                                        # up/pwa-csp, UP-2..UP-4, ol/ chrome
 PHILO_WEB_HOST_SCRIPT_URL=/oberon/philo-host.js?v=<tag>
@@ -246,8 +254,11 @@ docker run --rm -v "$SCRATCH":/data alpine sh -c 'apk add --no-cache sqlite >/de
 - Don't copy `vapid-keys.json` into the scratch volume. A fresh key pair is generated, so even a leftover
   subscription can't be pushed to.
 - Leave every `OL_NOTIFY_*` variable unset (or point them at a non-production Notify), so nothing posts to the real feed.
-- Set `PHILO_PUBLIC_BASE_URL=http://localhost:<port>` (the SSH-forwarded address) and use the rehearsal client
-  `philo-dev` (identity spec §4.3) for OL Auth.
+- Set `PHILO_PUBLIC_BASE_URL=http://localhost:24910` and use the rehearsal client `philo-dev` (identity spec §4.3)
+  for OL Auth. The redirect is built from the browser's origin, and `philo-dev` registers only
+  `http://localhost:24910/auth/callback`, so forward that address to the scratch port:
+  `ssh -L 24910:localhost:$PORT`. Override only this; everything else is identity spec §3. `PHILO_TRUSTED_PROXY=true`
+  stays, so the boot-log check below holds; with loopback only, nobody but the host can spoof `X-Forwarded-For`.
 - Start it only with `-p 127.0.0.1:$PORT:3000`, `--name "$SCRATCH"`, and no Caddy route. Never `docker stop` or
   restore by a name you didn't type from `$SCRATCH`.
 
