@@ -1,8 +1,9 @@
 # Philo identity through OL Auth
 
 Status: **decided in part, 2026-11-26.** Decided by the maintainer: several users with a user and an admin role
-(§4.5, upstream ADR-0012, philo-crm/philo#66), and the OL Auth scopes `philo:user` and `philo:admin` (§5). The upstream
-PRs in §2 are open, in progress or planned, as its table says. The fork wiring (§3) and the cutover (§4) are not built
+(§4.5, upstream ADR-0012, philo-crm/philo#66), and the OL Auth scopes `philo:user` and `philo:admin` (§5). As of the
+2026-11-26 upstream sync (fork #12), rows 1–9 and 14–16 have merged upstream and reached the fork; the rest are in
+progress or planned, as the §2 table says. The fork wiring (§3) and the cutover (§4) are not built
 or run yet.
 
 **Goal.** Everyone signs in to this fork through OL Auth, and nobody uses Philo's built-in IdP. The MCP
@@ -56,24 +57,24 @@ users, ADR-0012).
 
 | # | Branch | PR | State | For | Needs | ADR |
 |---|---|---|---|---|---|---|
-| 1 | `up/fork-safe-ci` | #60 | open | CI on fork PRs, Bugbot skipped without its secrets | — | No |
-| 2 | `up/oidc-sign-in-request` (ID-U3) | #61 | open | G7; owns the SDK's `resource` and `prompt` (G10, CH-UP-2) | — | No |
-| 3 | `up/oidc-userinfo-email` (ID-U2) | #62 | open | G1 | — | No |
-| 4 | `up/change-event-actor` (NT-U1) | #63 | open | the agent rows of notifications §5 | — | No (`DESIGN.md`) |
-| 5 | `up/boot-change-feed` (NT-U2) | #64 | open | the notifications module | — | No |
-| 6 | `up/oidc-audiences` (ID-U1) | #65 | open | G4 | — | No |
-| 7 | `up/multi-user-adr` | #66 | open | ADR-0012, several users with roles | — | **ADR-0012** |
-| 8 | `up/roles-authz` (MU-a) | — | in progress | a role on every account and a guard on every route | 7 | Implements 0012 |
-| 9 | `up/pwa-csp` (CH-UP-1) | — | in progress | a CSP for the PWA shell, with `PHILO_WEB_CONNECT_ORIGINS` | — | No |
-| 10 | `up/oidc-multi-user` (MU-b) | — | planned | G3, G5, G6: roles from scopes, one account per subject | 2, 3, 8 | Implements 0012 |
+| 1 | `up/fork-safe-ci` | #60 → #73 | merged (as #73) | CI on fork PRs, Bugbot skipped without its secrets | — | No |
+| 2 | `up/oidc-sign-in-request` (ID-U3) | #61 | merged | G7; owns the SDK's `resource` and `prompt` (G10, CH-UP-2) | — | No |
+| 3 | `up/oidc-userinfo-email` (ID-U2) | #62 | merged | G1 | — | No |
+| 4 | `up/change-event-actor` (NT-U1) | #63 | merged | the agent rows of notifications §5 | — | No (`DESIGN.md`) |
+| 5 | `up/boot-change-feed` (NT-U2) | #64 | merged | the notifications module | — | No |
+| 6 | `up/oidc-audiences` (ID-U1) | #65 | merged | G4 | — | No |
+| 7 | `up/multi-user-adr` | #66 | merged | ADR-0012, several users with roles | — | **ADR-0012** |
+| 8 | `up/roles-authz` (MU-a) | #68 | merged | a role on every account and a guard on every route | 7 | Implements 0012 |
+| 9 | `up/pwa-csp` (CH-UP-1) | #67, #76 | merged | a CSP for the PWA shell, with `PHILO_WEB_CONNECT_ORIGINS` | — | No |
+| 10 | `up/oidc-multi-user` (MU-b) | — | in progress | G3, G5, G6: roles from scopes, one account per subject | 2, 3, 8 | Implements 0012 |
 | 11 | `up/oidc-any-agent-client` (ID-U5) | — | planned | G2 | 6, 10 | Implements 0012 |
 | 12 | `up/user-management` (MU-c) | — | planned | people on the built-in IdP, API and SDK | 8 | Implements 0012 |
 | 13 | `up/pwa-people` (MU-d) | — | planned | People and account screens in the PWA | 12 | Implements 0012 |
-| 14 | `up/pwa-refresh-lock` (ID-U6) | — | planned | G8 | — | No |
-| 15 | `up/pwa-rp-logout` (ID-U7) | — | planned | G9 | — | No |
-| 16 | CH-UP-2, extra token in a hidden frame | — | planned | the chrome's tokens | 2, 9 | No |
-| 17 | CH-UP-3, host script and top-bar slot | — | planned | the chrome | 16 | **ADR-0013**, operator host script |
-| 18 | CH-UP-4, `PHILO_WEB_ASSET_ORIGINS` | — | planned | the chrome's assets (origin plus optional path prefix) | 9, 17 | No |
+| 14 | `up/pwa-refresh-lock` (ID-U6) | #69 | merged | G8 | — | No |
+| 15 | `up/pwa-rp-logout` (ID-U7) | #72 | merged | G9 | — | No |
+| 16 | CH-UP-2, extra token in a hidden frame | #70 | merged | the chrome's tokens | 2, 9 | No |
+| 17 | CH-UP-3, host script and top-bar slot (`up/web-host-script`) | — | in progress | the chrome | 16 | Implements **ADR-0013** (#71, merged) |
+| 18 | CH-UP-4, `PHILO_WEB_ASSET_ORIGINS` (with row 17) | — | in progress | the chrome's assets (origin plus optional path prefix) | 9, 17 | No |
 | (19) | `up/oidc-bind-subject` (ID-U8) | — | only if upstream asks | §4 fallback | — | No |
 
 Rows 1–7, 9, 14 and 15 do not depend on each other. ADR-0012 is the several-users decision, and it already covers
