@@ -12,11 +12,11 @@ import { readJsonBody } from '../json-body.ts'
 import { hashAccessToken } from '../oauth/tokens.ts'
 import { linkUrl } from './links.ts'
 import {
+  changePassword,
   invitePerson,
   issueResetLink,
   listPeople,
   reinvitePerson,
-  revokeOtherGrants,
   updatePerson,
   type PeopleMode,
   type PersonPatch,
@@ -234,9 +234,8 @@ export function createAccountRoutes(deps: UserRoutesDeps): Hono<AuthEnv> {
     } finally {
       guards.hashGate.release()
     }
-    db.update(users).set({ passwordHash }).where(eq(users.id, userId)).run()
     const token = bearerToken(c.req.header('authorization'))
-    revokeOtherGrants(db, userId, token === undefined ? undefined : hashAccessToken(token))
+    changePassword(db, userId, passwordHash, token === undefined ? undefined : hashAccessToken(token))
     return c.body(null, 204)
   })
 

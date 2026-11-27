@@ -364,7 +364,7 @@ export class PhiloClient {
       return body.account
     },
 
-    /** Built-in IdP only. Signs out your other sessions. */
+    /** Built-in IdP only. Signs out your other sessions and voids any pending reset link. */
     changePassword: async (currentPassword: string, newPassword: string): Promise<void> => {
       await this.#http.request('POST', `${API}/account/password`, { currentPassword, newPassword })
     },

@@ -429,6 +429,23 @@ describe('reset links — POST /api/v1/users/:id/reset-link', () => {
     expect(await signIn(testApp, 'sam@example.com', 'the-reset-password!')).toMatchObject({ code: true })
   })
 
+  it('ends an invitation when used instead of the invite: the account is active and cannot be re-invited', async () => {
+    const testApp = createTestApp()
+    const { admin } = await adminAndId(testApp)
+    const { user, inviteUrl } = await invite(testApp, admin)
+    const res = await testApp.app.request(`/api/v1/users/${user.id}/reset-link`, json('POST', {}, admin))
+    expect(res.status).toBe(200)
+    const { resetUrl } = (await res.json()) as { resetUrl: string }
+    expect((await useLink(testApp, resetUrl, { password: NEW_PASSWORD })).status).toBe(302)
+
+    expect((await people(testApp, admin)).find((person) => person.id === user.id)).toMatchObject({ status: 'active' })
+    const reinvite = await testApp.app.request(`/api/v1/users/${user.id}/invite`, json('POST', {}, admin))
+    expect(reinvite.status).toBe(409)
+    expect(await reinvite.json()).toEqual({ error: 'not_invited' })
+    expect((await useLink(testApp, inviteUrl, { password: 'somebody-else-entirely' })).status).toBe(410)
+    expect(await signIn(testApp, 'sam@example.com', NEW_PASSWORD)).toMatchObject({ code: true })
+  })
+
   it('refuses your own account and a deactivated one', async () => {
     const testApp = createTestApp()
     const { admin, adminId } = await adminAndId(testApp)
@@ -521,6 +538,23 @@ describe('your own account — /api/v1/account', () => {
       testApp.app.request('/oauth/token', form({ grant_type: 'refresh_token', client_id: FIRST_PARTY_CLIENT_ID, refresh_token: token }))
     expect((await refresh(elsewhere.refreshToken)).status).toBe(400)
     expect((await refresh(here.refreshToken)).status).toBe(200)
+  })
+
+  it('voids a pending reset link when the password changes', async () => {
+    const testApp = createTestApp()
+    const { admin, auth, userId } = await signedInPerson(testApp)
+    const issued = await testApp.app.request(`/api/v1/users/${userId}/reset-link`, json('POST', {}, admin))
+    const { resetUrl } = (await issued.json()) as { resetUrl: string }
+    expect((await testApp.app.request(pathOf(resetUrl))).status).toBe(200)
+
+    const res = await testApp.app.request(
+      '/api/v1/account/password',
+      json('POST', { currentPassword: NEW_PASSWORD, newPassword: 'another-long-password' }, auth),
+    )
+    expect(res.status).toBe(204)
+    expect((await testApp.app.request(pathOf(resetUrl))).status).toBe(410)
+    expect((await useLink(testApp, resetUrl, { password: 'the-reset-password!' })).status).toBe(410)
+    expect(await signIn(testApp, 'sam@example.com', 'another-long-password')).toMatchObject({ code: true })
   })
 })
 
