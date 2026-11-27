@@ -1097,7 +1097,8 @@ Then the bounded wait, `sh "$D/wait.sh" <philo container>`. If it fails, go to t
   **Undo it** once the scopes are back on (the env change reverted and the container recreated, as above). It runs
   under step 3's OK, which covered it, with a new backup (step 3's block, a new `<HHMM>`) and the container stopped:
   `UPDATE users SET disabled_at = NULL WHERE id <> 1 AND disabled_at BETWEEN <T1> AND <T2>; SELECT changes();`
-  prints N, with step 4's rule for anything else. The bounds leave out anyone offboarded before T1 or after T2. Their
+  prints N, with step 4's rule for anything else. The bounds leave out anyone offboarded before T1. Nobody can be
+  offboarded between T1 and the undo (see "Release 2: offboarding"), so no one else is caught. Their
   sign-in, keys and push are back as they were. A reactivation through the API (`{"disabled":false}`) does the same
   for one account, since the data step deleted nothing.
 - **The image itself fails**, or upgrade step 2's wait failed: back to release 1's image, env and container. Release
@@ -1168,6 +1169,13 @@ Auth. Deactivation is immediate and permanent where it matters: it deletes their
 push subscriptions for good, and refuses their OL Auth tokens from the next request (the people API above). Philo
 keeps running, and intake isn't touched.
 
+**Not during a rollback.** While a roles or image rollback's `disabled_at` data step is in effect (between its T1
+and its undo), don't offboard anyone. Every other account is already disabled, so the API's deactivation writes
+nothing and deletes no keys, and the undo would bring the person back with their keys. Record the offboarding as
+**pending** in the log (the time and "pending", not the address), and tell the maintainer. Run it right after the
+undo, as below. If the maintainer needs the person cut off at once during the rollback, they are already refused:
+every account except `id=1` is disabled. Until the undo, removing their roles at OL Auth is enough.
+
 1. **The OK and a backup.** Nothing in step 3 runs without both:
    - **The maintainer's explicit OK**, given after they hear the consequence: this person's API keys, tokens and push
      subscriptions are **deleted for good**. A reactivation restores sign-in only; they'd make new keys and
@@ -1183,9 +1191,12 @@ keeps running, and intake isn't touched.
    read -r E                     # type their address, then Enter
    F='[.users[] | select((.email | ascii_downcase) == ($e | ascii_downcase) and .id != 1)]'
    curl -s -H @"$D/admin-key.hdr" "$P" | jq --arg e "$E" "$F | length"                          # 1
+   curl -s -H @"$D/admin-key.hdr" "$P" | jq --arg e "$E" "$F | map(select(.status == \"disabled\")) | length"   # 0
    ```
-   Anything but `1` is a stop: `0` means no such account (or it is `id=1`, which can't deactivate itself). Run
-   `unset E` and go no further.
+   Anything but `1`, then `0`, is a stop. `0` on the first line means no such account (or it is `id=1`, which can't
+   deactivate itself). `1` on the second means they are already deactivated, most likely by a rollback's data step
+   that hasn't been undone. Deactivating them again would write nothing and delete no keys (see "Not during a
+   rollback" above), so tell the maintainer. Either way, run `unset E` and go no further.
 3. **Deactivate them**, in the same shell:
    ```sh
    id=$(curl -s -H @"$D/admin-key.hdr" "$P" | jq --arg e "$E" "$F | .[0].id")
