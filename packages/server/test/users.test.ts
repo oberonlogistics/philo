@@ -294,6 +294,14 @@ describe('changing a person — PATCH /api/v1/users/:id', () => {
   })
 })
 
+const countFor = (testApp: TestApp, userId: number) => ({
+  apiKeys: testApp.db.select().from(apiKeys).where(eq(apiKeys.userId, userId)).all().length,
+  accessTokens: testApp.db.select().from(accessTokens).where(eq(accessTokens.userId, userId)).all().length,
+  refreshTokens: testApp.db.select().from(refreshTokens).where(eq(refreshTokens.userId, userId)).all().length,
+  codes: testApp.db.select().from(authorizationCodes).where(eq(authorizationCodes.userId, userId)).all().length,
+  push: testApp.db.select().from(pushSubscriptions).where(eq(pushSubscriptions.userId, userId)).all().length,
+})
+
 describe('deactivation', () => {
   /** A user holding one of every credential, and a lead event of theirs. */
   async function equipped(testApp: TestApp) {
@@ -326,13 +334,6 @@ describe('deactivation', () => {
     return { admin, userId, pwa, refreshToken, agent: agent.authorization, key: `Bearer ${key}` }
   }
 
-  const countFor = (testApp: TestApp, userId: number) => ({
-    apiKeys: testApp.db.select().from(apiKeys).where(eq(apiKeys.userId, userId)).all().length,
-    accessTokens: testApp.db.select().from(accessTokens).where(eq(accessTokens.userId, userId)).all().length,
-    refreshTokens: testApp.db.select().from(refreshTokens).where(eq(refreshTokens.userId, userId)).all().length,
-    codes: testApp.db.select().from(authorizationCodes).where(eq(authorizationCodes.userId, userId)).all().length,
-    push: testApp.db.select().from(pushSubscriptions).where(eq(pushSubscriptions.userId, userId)).all().length,
-  })
 
   it('revokes every credential and keeps what the account did', async () => {
     const testApp = createTestApp()
