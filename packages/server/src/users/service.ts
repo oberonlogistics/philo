@@ -174,12 +174,17 @@ export function revokeGrants(tx: Pick<Db, 'delete'>, id: number): void {
 }
 
 /**
- * Every grant but the one in hand: the access token making the request and
- * the refresh token issued with it. `issueTokens` writes a pair with one
- * timestamp, which is what ties them together.
+ * A password change, in one transaction: the new hash, every pending link
+ * voided (an unused reset link is a way in the person means to close), and
+ * every grant revoked but the one in hand — the access token making the
+ * request and the refresh token issued with it. `issueTokens` writes a pair
+ * with one timestamp, which is what ties them together; another pair issued
+ * to the same client in the same millisecond would survive too.
  */
-export function revokeOtherGrants(db: Db, id: number, currentTokenHash: string | undefined): void {
+export function changePassword(db: Db, id: number, passwordHash: string, currentTokenHash: string | undefined): void {
   db.transaction((tx) => {
+    tx.update(users).set({ passwordHash }).where(eq(users.id, id)).run()
+    voidLinks(tx, id)
     const current =
       currentTokenHash === undefined
         ? undefined

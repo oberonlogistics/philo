@@ -94,16 +94,19 @@ export function findUsableLink(db: Pick<Db, 'select'>, token: string, now = new 
   return row
 }
 
-/** Ids of accounts that were invited and never used an invite: no password of their own yet. */
+/**
+ * Ids of accounts that were invited and never used a link of any purpose: no
+ * password of their own yet. A reset link sets a password too, so using one
+ * ends an invitation just as using the invite does.
+ */
 export function invitedAccountIds(db: Pick<Db, 'select'>): Set<number> {
   const invited = new Set<number>()
   const used = new Set<number>()
   for (const row of db
-    .select({ userId: accountLinks.userId, usedAt: accountLinks.usedAt })
+    .select({ userId: accountLinks.userId, purpose: accountLinks.purpose, usedAt: accountLinks.usedAt })
     .from(accountLinks)
-    .where(eq(accountLinks.purpose, 'invite'))
     .all()) {
-    invited.add(row.userId)
+    if (row.purpose === 'invite') invited.add(row.userId)
     if (row.usedAt !== null) used.add(row.userId)
   }
   for (const id of used) invited.delete(id)
