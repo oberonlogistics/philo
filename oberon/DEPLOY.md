@@ -36,7 +36,9 @@ runs those steps. Agents prepare the commands and never run them.
 - A rehearsal on a copy of production is HUMAN work (§4.3), and it must not reach real people.
 - **Release 1 exception (maintainer waiver, 2026-11-26).** For release 1 only, the agent named in
   [`CUTOVER.md`](CUTOVER.md) may run the steps marked HUMAN in §4.3, §5 and §6 (the real-copy rehearsal, the window
-  and both rollbacks), under CUTOVER's gates and data rules (CUTOVER §1). OL Auth and Notify registration stay human.
+  and both rollbacks), under CUTOVER's gates and data rules (CUTOVER §1). It also covers reading Caddy's site block
+  for Philo, pushing the one release tag after the maintainer's gate, and handing the host's env files to Docker
+  without printing their values. OL Auth and Notify registration stay human.
 
 ## 2. The image
 
@@ -329,7 +331,7 @@ is told a submission went through. Pick a low-traffic hour.
    again, and retry — or roll back (§6).
 7. Turn off the intake hold and reload Caddy. Intake is open again.
 
-**Post-checks** (HUMAN, release 1: the CUTOVER agent, §1; they touch production and real data; the window closes when all pass):
+**Post-checks** (HUMAN; release 1: the CUTOVER agent, §1; they touch production and real data; the window closes when all pass):
 
 - [ ] `scripts/health-check.sh` passes, including `OK   Philo intake preflight from https://oberonlogistics.com`.
 - [ ] One test lead through the real website form shows the success message, appears in Philo, and the notification
@@ -408,7 +410,7 @@ Keep both named backups until the next release has run cleanly; then delete them
 | D1 | Where it runs | Decided: the current host, no DNS change |
 | D3 | Backups (§4.1) | **Open.** Existing backups continue; confirm form, off-host destination and retention before the cutover |
 | D4 | Image source (§2) | Decided: GHCR, `ol-v*` from the fork-only workflow, pinned by digest |
-| D5 | Intake during the window (§5) | Decided: at most 15 minutes; the form shows its fallback |
+| D5 | Intake during the window (§5) | Decided: at most 15 minutes; the form shows its fallback. It covers the window only; release 1's R2 has its own target (CUTOVER §8) |
 | D6 | Phases | Decided: one window. **Revised 2026-11-26:** release 1 now ([`CUTOVER.md`](CUTOVER.md)); the chrome, several users and MCP agents follow in a later env-and-image upgrade |
 | D7 | `OL_NOTIFY_ROLE` (§3.3) | Decided: the Philo users role |
 | D8 | Notify's resource identifier (§3.3) | Decided: `https://notify.oberonlogistics.com` |
