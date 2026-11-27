@@ -642,3 +642,135 @@ boot. Tell the maintainer when R2 starts, and again if it passes that target.
   Include no secrets, no env values beyond those on this page, and no lead data.
 - The next release adds the chrome, several people and MCP agents through OL Auth. It goes through DEPLOY.md §7, plus
   that release's own env additions and its own rehearsal. The §1 waiver doesn't carry over to it.
+
+## Release 2 (chrome and several users)
+
+**Draft.** An env-and-image upgrade on top of release 1, through DEPLOY.md §7, with no new data migration expected.
+It needs no window: intake stays up, and only signed-in pages change. The §1 waiver doesn't cover it; the maintainer
+runs it or gives a new one. Re-check this section against the release's own commit before using it.
+
+| | After release 1 | After release 2 |
+|---|---|---|
+| Image | `ol-v0.7.0-1` | The release-2 tag (`ol-v0.7.0-2`, or `ol-v<next>-1` if a sync lands first), which contains `oberon/web/philo-host.js` from `ol/chrome-wiring` and self-registered agents (philo-crm/philo#79, landed early as fork PR #17) |
+| Top bar | Philo's own account menu | The shared bell, app switcher and account menu (chrome spec §3); Philo's menu returns on any chrome failure, and `/sign-out` always works |
+| Sign-in | Only `id=1`, by its bound subject | Every OL Auth person with a Philo role, with the role their token's scopes give (identity spec §4.5) |
+| Agents | API keys | Also MCP agents that register themselves with OL Auth (`PHILO_OIDC_AGENT_CLIENT_IDS=*`, ID-U5), each acting as the person who connected it, with that person's role. API keys keep working |
+
+### Release 2: prerequisites (the maintainer confirms each)
+
+- [ ] **The maintainer holds the Philo admins role** (`philo-admins`) at OL Auth **before the first sign-in on
+  release 2** (identity spec §4). Roles come from scopes from then on: without the admins role, `id=1` signs in as a
+  user and nobody can reach Server settings.
+- [ ] **Everyone else who should use Philo** is in `philo-users` (or `philo-admins`). Anyone outside both is refused.
+- [ ] **The `philo` client** holds `auth:apps`, `auth:account` and `notify:read`, with the audiences
+  `https://auth.oberonlogistics.com/api` and `https://notify.oberonlogistics.com`, and is first-party (identity spec
+  §5, "Public client"). Without them Philo works, but the chrome falls back to Philo's own menu.
+- [ ] **The tile** has `launch_url` `https://philo.oberonlogistics.com/`, required scope `philo:user`, and a tint and
+  glyph no other app uses (chrome spec §3.4).
+- [ ] **For agents** (identity spec §5): the Philo resource and both scopes are `dynamic_clients: true`, and the
+  rehearsal client `philo-dev` is **deleted** (identity spec §4.3 step 4), because `*` admits every client OL Auth
+  issued a Philo token to.
+- [ ] **If release 1 cut over more than 30 days ago**, `id=1`'s role confirmation has lapsed (identity spec §4.4): its
+  API keys answer 401 until the maintainer signs in once on release 2 (the upgrade, step 3).
+
+### Release 2: checks before the upgrade (read-only)
+
+```sh
+O=https://philo.oberonlogistics.com
+A=https://auth.oberonlogistics.com/chrome/v1
+for f in ol-chrome.js tokens.css fonts.css; do
+  curl -s -o /dev/null -w "$f %{http_code} %{redirect_url}\n" -H "Origin: $O" "$A/$f"
+done
+curl -sI -H "Origin: $O" "$A/ol-chrome.js" | grep -i '^access-control-allow-origin'
+curl -s -o /dev/null -w '%{http_code}\n' "$A/..%2Fmedia/x"
+curl -s -o /dev/null -w '%{http_code}\n' -X OPTIONS -H "Origin: $O" \
+  -H 'Access-Control-Request-Method: GET' -H 'Access-Control-Request-Headers: authorization' \
+  https://notify.oberonlogistics.com/v1/me/notifications
+curl -sI -X OPTIONS -H "Origin: $O" -H 'Access-Control-Request-Method: GET' \
+  -H 'Access-Control-Request-Headers: authorization' \
+  https://notify.oberonlogistics.com/v1/me/notifications | grep -i '^access-control-allow-origin'
+```
+
+Expect each file `200` with no redirect URL; `access-control-allow-origin: https://philo.oberonlogistics.com` from
+OL Auth (the tile's launch origin, so the chrome loads in CORS mode); `404` for the `%2F` path, which is what keeps
+`PHILO_WEB_ASSET_ORIGINS`'s prefix meaningful (chrome spec §3.3); and a 2xx preflight naming Philo's origin from
+Notify, or the bell can't read the feed. Any other answer: stop and tell the maintainer.
+
+### Release 2: the environment it adds
+
+Add these to release 1's `philo-ol.env.public` (§5), then rebuild `philo-ol.env` with the secret as §5 does. Keep
+everything release 1 set. `<tag>` is the release-2 tag.
+
+```sh
+# Several users: identity spec §3 (philo-crm/philo#77, in v0.7.0)
+PHILO_OIDC_USER_SCOPE=philo:user
+PHILO_OIDC_ADMIN_SCOPE=philo:admin
+PHILO_OIDC_AGENT_SCOPE=philo:user philo:admin offline_access
+# Self-registered agents: identity spec §3 (philo-crm/philo#79, fork PR #17)
+PHILO_OIDC_AGENT_CLIENT_IDS=*
+
+# Chrome: chrome spec §3.3 (philo-crm/philo#78, in v0.7.0; ol/chrome-wiring)
+PHILO_WEB_HOST_SCRIPT_URL=/oberon/philo-host.js?v=<tag>
+PHILO_WEB_HOST_CONFIG={"notifyUrl":"https://notify.oberonlogistics.com","notifyResource":"https://notify.oberonlogistics.com"}
+PHILO_WEB_HOST_TOKEN_RESOURCES=https://auth.oberonlogistics.com/api,https://notify.oberonlogistics.com
+PHILO_WEB_ASSET_ORIGINS=https://auth.oberonlogistics.com/chrome/v1/
+PHILO_WEB_CONNECT_ORIGINS=https://notify.oberonlogistics.com
+```
+
+The same rules as §5: no quotes, no comment after a value. `*` means "any client", but only on an image that
+contains philo-crm/philo#79; on an older one it is a literal client id that admits no agent, so check the image
+before relying on it (the agent check in the upgrade, step 6).
+
+**Test the file on a throwaway container** exactly as §5 does, with the release-2 image. Also check, on that
+container, that boot **fails** when `PHILO_OIDC_USER_SCOPE` is set without `PHILO_OIDC_ADMIN_SCOPE` (identity spec
+§3), by running it once more with `-e PHILO_OIDC_ADMIN_SCOPE=` added. On the good run, the log must show
+`identity:        external IdP https://auth.oberonlogistics.com (operator client philo), roles from scopes philo:user / philo:admin`,
+and the Notify line as in §5. Then, before removing it:
+
+```sh
+curl -s http://127.0.0.1:<free port>/api/v1/web/config
+curl -sI http://127.0.0.1:<free port>/ | grep -i '^content-security-policy'
+curl -s http://127.0.0.1:<free port>/oberon/philo-host.js | grep -c 'An opt-in operator host script'
+```
+
+The web config names `/oberon/philo-host.js?v=<tag>`, the config above and both token resources. The policy has
+`https://auth.oberonlogistics.com/chrome/v1/` in `script-src`, `style-src` and `font-src`, the bare
+`https://auth.oberonlogistics.com` in `img-src`, `connect-src` and `frame-src`, Notify in `connect-src`, and no
+`'unsafe-inline'`. The script check prints `1`.
+
+### Release 2: the upgrade
+
+1. Back up to a named file (§7 step 2's command, into `"$D/prerelease2"`).
+2. Set the release-2 tag and digest, pass the new `philo-ol.env`, start it, and wait: `sh "$D/wait.sh" <philo container>`.
+3. The maintainer signs in to the PWA through OL Auth. Check: the top bar shows the bell, the app switcher (with the
+   Philo tile current) and the shared account menu, and not Philo's own; Server settings is reachable from the
+   account menu (so `id=1` is an admin); the theme picked in the shared menu sticks after a reload; an existing API
+   key answers 200 (`curl -s -o /dev/null -w '%{http_code}\n' -H 'Authorization: Bearer <key>' $O/api/v1/funnels`
+   or any read the key may make); `/sign-out` signs out.
+4. The browser console on a signed-in page shows no `Content-Security-Policy` violation and no "Philo: the host
+   script failed" line.
+5. A second person from `philo-users` signs in and gets a user's view (no Server settings).
+6. An agent connects: the maintainer adds Philo's `/mcp` (`https://philo.oberonlogistics.com/mcp`) to an MCP client
+   that registers itself (Claude Code, for example), signs in through OL Auth, and lists leads. The `/mcp` metadata
+   (`/.well-known/oauth-protected-resource/mcp`) advertises `philo:user philo:admin offline_access`.
+7. `scripts/health-check.sh` and one test lead, with the maintainer's OK.
+
+### Release 2: rollback (environment only)
+
+The image is compatible with release 1's env, so a rollback is an env change and a restart, with no data step.
+
+- **Chrome trouble only:** remove the five chrome lines, all together (`PHILO_WEB_HOST_CONFIG`,
+  `PHILO_WEB_HOST_TOKEN_RESOURCES` and `PHILO_WEB_ASSET_ORIGINS` without `PHILO_WEB_HOST_SCRIPT_URL` are a startup
+  error; `PHILO_WEB_CONNECT_ORIGINS` alone is harmless but no longer needed). Restart. Philo's own menu is back and
+  the policy is release 1's.
+- **Agent trouble only:** remove `PHILO_OIDC_AGENT_CLIENT_IDS` and restart. Self-registered agents are refused from
+  the next request; API keys keep working.
+- **Roles trouble:** also remove the three `PHILO_OIDC_*_SCOPE` lines, together (one without the other is a startup
+  error), and `PHILO_OIDC_AGENT_CLIENT_IDS`. Restart. The boot line ends `, one account` again. **This does not shut out accounts created on release 2:**
+  in one-account mode a subject that is already bound still signs in, with the role stored on its account, and the
+  30-day rule is off (`external-idp.ts`, `findOrProvisionOnlyAccount`). If that matters, an admin deactivates those
+  accounts.
+- **The image itself fails:** set release 1's tag and digest back, with release 1's `philo-ol.env`. If the release
+  carried a migration after all, §8 R2's reasoning (back to stock) applies instead; check `__drizzle_migrations` first.
+
+Then the upgrade's steps 3, 4 and 7 again, expecting Philo's own menu.
