@@ -202,10 +202,17 @@ export interface ApiKeyRecord {
   lastUsedAt: string | null
 }
 
+/**
+ * ADR-0012. A `user` works leads; an `admin` also configures the instance and
+ * manages people. An admin can do everything a user can.
+ */
+export type Role = 'user' | 'admin'
+
 export interface User {
   id: number
   email: string
   name: string | null
+  role: Role
 }
 
 /**
@@ -218,12 +225,19 @@ export interface AuthConfig {
   clientId: string
   /** What to request. Always includes `openid`. */
   scope: string
+  /**
+   * RFC 8707 resource indicators to send with the request and the token
+   * exchange. Empty unless the operator configured some for an external IdP.
+   */
+  resource: string[]
 }
 
 /** Whose a token is — `GET /api/v1/auth/principal`. */
 export interface Principal {
   /** The user the credential acts for, with exactly their authority. */
   user: User
+  /** What the credential may do: its user's role — ADR-0012. */
+  role: Role
   /** How the timeline names this credential: `user:<id>`, `api_key:<id>` or `oauth:<client>`. */
   actor: string
 }
