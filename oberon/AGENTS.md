@@ -54,6 +54,7 @@ a future merge conflict, so record each one in the table below.
 | File | Why | Can an upstream extension point remove it? |
 |---|---|---|
 | `AGENTS.md`, `CLAUDE.md` | The pointer to this guide, two lines at the top | No; keep it to those two lines |
+| `apps/standalone/src/index.ts` | Starts the OL Notify module (`apps/standalone/src/oberon/notify.ts`, [`docs/notifications.md`](docs/notifications.md) §10): one import and one call after `bootServer` | It already has: philo-crm/philo#64 (`bootServer` returns `changes`) is that extension point, so `boot.ts` is not edited. Only the import and the one call remain; keep it to those two lines |
 
 ## Worktrees
 
@@ -105,8 +106,9 @@ Every commit, in every branch, follows upstream's rules, so any of them can go u
    because an `up/` branch has no `oberon/` directory.
 4. Push to `origin` and open the PR against upstream from the fork:
    `gh pr create -R philo-crm/philo --head oberonlogistics:up/<slug> --base main`.
-5. Bugbot does not run on fork PRs, so upstream needs a human review. Get the PR to green CI and
-   a clean independent review, then **ask the maintainer to review and merge it. Never merge an
+5. Upstream's Bugbot reviews a fork PR when its author has write access to `philo-crm/philo`, or
+   while the PR carries the `bugbot` label (philo-crm/philo#73). Get the PR to green CI, a clean
+   independent review and Bugbot's verdict, then **ask the maintainer to review and merge it. Never merge an
    upstream PR yourself.**
 6. Once it merges, the change reaches the fork with the next upstream sync. Delete `up/<slug>`
    from `origin`.
@@ -143,8 +145,8 @@ Never rebase `main`, and never force-push `main` or any branch someone else may 
 
 Upstream's two-iteration review cap applies. If the second review still finds blockers, stop and
 escalate. Bugbot is not configured in the fork, because it has no `CLAUDE_CODE_OAUTH_TOKEN` or
-`BUGBOT_GH_TOKEN`. Until it is, a fork PR shows a failing or skipped Bugbot check; that check is
-not part of the fork merge bar.
+`BUGBOT_GH_TOKEN`. Its preflight job notices that and skips the review cleanly; a skipped Bugbot
+check is not part of the fork merge bar.
 
 ## Versions and releases
 
@@ -152,8 +154,18 @@ not part of the fork merge bar.
   bring it in.
 - Tag a fork release on `main` as `ol-v<upstream version>-<n>`, for example `ol-v0.5.1-1`. The
   `ol-` prefix keeps upstream's `v*` tag trigger from firing.
-- Deployment is not decided yet. Production at `https://philo.oberonlogistics.com` runs the stock
-  upstream image on its own host. Write the plan in `oberon/DEPLOY.md` before switching anything.
+- **Releases.** Pushing an `ol-v*` tag runs [`.github/workflows/ol-release.yml`](../.github/workflows/ol-release.yml):
+  it builds the stock image from upstream's `Dockerfile`, layers [`oberon/Dockerfile`](Dockerfile) on top (which adds
+  `oberon/web/*.js` and `*.css`, served at `/oberon/<file>`), smoke-tests it, and pushes only
+  `ghcr.io/oberonlogistics/philo:<tag>`, printing the digest in the job summary. Re-run it for an existing tag with
+  `workflow_dispatch`. Upstream's `docker-publish.yml` still publishes stock `:edge`, `:latest` and semver tags to
+  the same package, so pin production by `ol-v*` tag and digest. It refuses a tag whose commit isn't on
+  `main`. Neither file edits an upstream file. Locally:
+  `docker build -t philo-upstream:local . && docker build -f oberon/Dockerfile --build-arg PHILO_BASE=philo-upstream:local .`
+  See [`DEPLOY.md`](DEPLOY.md) §2.
+- Production at `https://philo.oberonlogistics.com` runs the stock upstream image on its own host.
+  The plan to cut it over to the fork image (same host) is [`DEPLOY.md`](DEPLOY.md). It has open decisions, so change nothing in
+  production until a human has settled them.
 
 ## Integration contracts (sibling repositories)
 

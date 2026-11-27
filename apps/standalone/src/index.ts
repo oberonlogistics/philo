@@ -2,9 +2,12 @@ import { serve } from '@hono/node-server'
 import { createMcpApp } from '@philo/mcp'
 import { bootServer, loadConfig, VERSION } from '@philo/server'
 import { createStandaloneApp } from './app.ts'
+import { pwaContentSecurityPolicies } from './csp.ts'
+import { loadOberonNotifyConfig, startOberonNotify } from './oberon/notify.ts'
 
 const config = loadConfig()
 const server = bootServer(config)
+startOberonNotify(server.changes, loadOberonNotifyConfig(process.env, config)) // Oberon: off unless OL_NOTIFY_* is set
 
 // In-process: the MCP app's SDK calls go through the server's own request
 // handling, auth included, without a socket in between.
@@ -14,7 +17,14 @@ const mcp = createMcpApp({
   fetch: (input, init) => server.app.request(input, init),
 })
 
-const app = createStandaloneApp({ server: server.app, mcp })
+const app = createStandaloneApp({
+  server: server.app,
+  mcp,
+  contentSecurityPolicy: pwaContentSecurityPolicies({
+    issuer: config.externalIdp?.issuer,
+    connectOrigins: config.webConnectOrigins,
+  }),
+})
 
 serve({ fetch: app.fetch, port: config.port }, () => {
   console.log(`philo ${VERSION} (standalone: API, MCP and app) listening on port ${config.port}`)
