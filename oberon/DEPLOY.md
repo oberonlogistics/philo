@@ -1,6 +1,8 @@
 # Deploying the Oberon Logistics fork of Philo
 
-This is a plan. Nothing in it has run against production yet. Items marked **DECIDE** need a human decision. The
+This is a plan. Nothing in it has run against production yet. **The first cutover follows [`CUTOVER.md`](CUTOVER.md)**
+(release 1: image, OL Auth for one account, Notify), and the chrome and several users follow as a later upgrade (D6).
+Items marked **DECIDE** need a human decision. The
 generic operations (data directory, backup, restore, upgrade) are in [`docs/DEPLOYMENT.md`](../docs/DEPLOYMENT.md),
 and this page doesn't repeat them.
 
@@ -14,8 +16,9 @@ and this page doesn't repeat them.
 | Chrome, bell | None | The shared chrome and the Notify feed |
 | State | One SQLite data volume on the current host | **The same volume**, not copied anywhere |
 
-The cutover is **one window**: the image, the OL Auth settings, the chrome and the Notify settings change together,
-on the current host, on the existing data volume. An intake gap of up to 15 minutes is accepted. (Not chosen: moving
+The cutover was planned as **one window**, with the image, the OL Auth settings, the chrome and the Notify settings
+changing together, on the current host, on the existing data volume. Since 2026-11-26 (D6) it is two steps: release 1
+([`CUTOVER.md`](CUTOVER.md)) has the only window, and the chrome and several users follow as an ordinary upgrade. An intake gap of up to 15 minutes is accepted. (Not chosen: moving
 to the shared OL apps host, and splitting the work into a host phase and an integration phase.)
 
 **Intake must never break for longer than the window.** The public site posts recruiting leads to
@@ -31,6 +34,11 @@ runs those steps. Agents prepare the commands and never run them.
 - Agents rehearse this whole runbook only on a **synthetic** instance: a fresh stock v0.5.1 with made-up leads, an
   attachment, a push subscription and a webhook, upgraded to the fork tag through §5 and rolled back through §6.
 - A rehearsal on a copy of production is HUMAN work (§4.3), and it must not reach real people.
+- **Release 1 exception (maintainer waiver, 2026-11-26).** For release 1 only, the agent named in
+  [`CUTOVER.md`](CUTOVER.md) may run the steps marked HUMAN in §4.3, §5 and §6 (the real-copy rehearsal, the window
+  and both rollbacks), under CUTOVER's gates and data rules (CUTOVER §1). It also covers reading Caddy's site block
+  for Philo, pushing the one release tag after the maintainer's gate, and handing the host's env files to Docker
+  without printing their values. OL Auth and Notify registration stay human.
 
 ## 2. The image
 
@@ -76,8 +84,8 @@ COPY --from=oberon-web /out/ /app/apps/web/dist/oberon/
 - Build the upstream `Dockerfile` (load only, never pushed), then `oberon/Dockerfile` with `PHILO_BASE` set to it.
 - Smoke-test the **layered** image, as upstream's workflow does for the stock one: `GET /version` returns
   `name: philo` and the `package.json` `version`. Then every `oberon/web/*.js` and `*.css` in the checkout must be
-  served at `/oberon/<file>` with 200 (none today; `philo-host.js` once the chrome lands). And once upstream's
-  standalone app sets a `Content-Security-Policy`, `GET /` must still carry it (skipped while the source has none).
+  served at `/oberon/<file>` with 200 (today `philo-host.js` and `philo-ol.css`). And once upstream's standalone app
+  sets a `Content-Security-Policy`, `GET /` must still carry it (it does from v0.6.0: `apps/standalone/src/csp.ts`).
 - Push `ghcr.io/oberonlogistics/philo:<tag>` only, and print `<image>:<tag>@sha256:<digest>` in the job summary:
   that is the reference production pins (rule 1 below). Each action is pinned by SHA, as upstream does.
 
@@ -234,7 +242,7 @@ doesn't wait on a new backup job; it needs only the named pre-cutover backup in 
 
 The website's form key is a row in `intake_forms`, so the intake URL doesn't change.
 
-### 4.3 Rehearsal on a copy (HUMAN, days before)
+### 4.3 Rehearsal on a copy (HUMAN, days before; release 1: the CUTOVER agent, §1)
 
 It runs on the production host, next to the only copy of the data, so every name is distinct and checked:
 
@@ -278,7 +286,7 @@ attachment opens; the chrome loads (chrome release only, and not with `philo-dev
 tag has migrations, the R2 data path (§6) on the same copy. Write down how long each step took. Afterwards delete the
 scratch container, volume and `./rehearsal/`: they hold applicants' personal data.
 
-## 5. Cutover runbook (one window, at most 15 minutes)
+## 5. Cutover runbook (one window, at most 15 minutes; release 1 follows CUTOVER.md)
 
 During the window, Caddy returns 502 for Philo. The website's form (`public/js/driverleadform.js` in the website repo)
 then shows *"Your submission was not received. Try again, or email … or call …"*. Nothing is queued, but no applicant
@@ -300,7 +308,7 @@ is told a submission went through. Pick a low-traffic hour.
 - [ ] The rehearsal (§4.3) passed, including the D9 check.
 - [ ] Baseline: the website's `scripts/health-check.sh` passes. Save the output.
 
-**The switch** (HUMAN):
+**The switch** (HUMAN; release 1: the CUTOVER agent, §1):
 
 1. Stop production (`docker stop <production container>`). The window opens. Write down the time as **T0**, in
    Unix milliseconds (`date +%s%3N`): the rollback filters on it.
@@ -323,7 +331,7 @@ is told a submission went through. Pick a low-traffic hour.
    again, and retry — or roll back (§6).
 7. Turn off the intake hold and reload Caddy. Intake is open again.
 
-**Post-checks** (HUMAN; they touch production and real data; the window closes when all pass):
+**Post-checks** (HUMAN; release 1: the CUTOVER agent, §1; they touch production and real data; the window closes when all pass):
 
 - [ ] `scripts/health-check.sh` passes, including `OK   Philo intake preflight from https://oberonlogistics.com`.
 - [ ] One test lead through the real website form shows the success message, appears in Philo, and the notification
@@ -336,7 +344,7 @@ is told a submission went through. Pick a low-traffic hour.
       lead (notifications spec §12.3).
 - [ ] An existing API key works against `/api/v1`.
 
-## 6. Rollback (HUMAN)
+## 6. Rollback (HUMAN; release 1: the CUTOVER agent, §1)
 
 Leads keep arriving once intake is back, so a rollback must not lose leads, stage moves, notes or **deletions** made
 after T0 (an erasure honoured after the cutover must not come back).
@@ -344,7 +352,8 @@ after T0 (an erasure honoured after the cutover must not come back).
 **R1: environment only (the fast path, no data lost).** Use it when the problem is identity, chrome or Notify and the
 fork image itself works. Drop `-f oberon/deploy/compose.ol.yaml` (or the OL env file) and restart the **same image on
 the same volume**. The built-in IdP comes back with the same account and signing key (identity spec §4.4), but the account is now
-bound to OL Auth, so the rehearsal must confirm built-in password sign-in still works for it; the
+bound to OL Auth, so the rehearsal must confirm built-in password sign-in still works for it (release 1: the
+maintainer accepts a simulated bind and a code reading instead, CUTOVER §2); the
 migrations stay applied and the fork image understands them. Nothing is restored, so nothing is lost.
 
 **R2: back to the stock v0.5.1 image.** Use it only when the fork image itself fails. Stock v0.5.1 is not supported on
@@ -401,8 +410,8 @@ Keep both named backups until the next release has run cleanly; then delete them
 | D1 | Where it runs | Decided: the current host, no DNS change |
 | D3 | Backups (§4.1) | **Open.** Existing backups continue; confirm form, off-host destination and retention before the cutover |
 | D4 | Image source (§2) | Decided: GHCR, `ol-v*` from the fork-only workflow, pinned by digest |
-| D5 | Intake during the window (§5) | Decided: at most 15 minutes; the form shows its fallback |
-| D6 | Phases | Decided: one window |
+| D5 | Intake during the window (§5) | Decided: at most 15 minutes; the form shows its fallback. It covers the window only; release 1's R2 has its own target (CUTOVER §8) |
+| D6 | Phases | Decided: one window. **Revised 2026-11-26:** release 1 now ([`CUTOVER.md`](CUTOVER.md)); the chrome, several users and MCP agents follow in a later env-and-image upgrade |
 | D7 | `OL_NOTIFY_ROLE` (§3.3) | Decided: the Philo users role |
 | D8 | Notify's resource identifier (§3.3) | Decided: `https://notify.oberonlogistics.com` |
 | D9 | Caddy's `X-Forwarded-For` handling (§3.2) | Check in the rehearsal |
