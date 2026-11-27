@@ -1056,12 +1056,12 @@ Then the bounded wait, `sh "$D/wait.sh" <philo container>`. If it fails, go to t
      `role_confirmed_at`, and needn't: one-account mode ignores the 30-day rule, so a lapsed `id=1` works again after
      step 5.
      - **A is 1 and N is 0:** no data step. Go to step 5.
-     - **A is 1 and N is more than 0:** step 4's disabling write.
+     - **A is 1 and N is more than 0:** steps 3 and 4 (the gate, then the disabling write).
      - **A is 0:** `id=1` was demoted, most likely by a sign-in without `philo-admins`. Prefer the OL Auth fix while
        the scopes are still on: start the container again unchanged (`docker start <philo container>`, or
        `docker compose start`, then the bounded wait), have the maintainer add `philo-admins` and sign in to the PWA,
-       which sets admin again (`confirmRole`), and then start over at step 1. Only if that can't be done, step 4's
-       admin write (and the disabling write too, if N is more than 0).
+       which sets admin again (`confirmRole`), and then start over at step 1. Only if that can't be done, steps 3
+       and 4: the gate, then the admin write (and the disabling write too, if N is more than 0).
   3. **The OK and a backup.** Nothing in step 4 runs without both:
      - **The maintainer's explicit OK**, given after they hear the consequence: N accounts (say the number) can't sign
        in, and their API keys, agents and push stop, until the undo below; nothing is deleted, and the undo brings
@@ -1097,7 +1097,9 @@ Then the bounded wait, `sh "$D/wait.sh" <philo container>`. If it fails, go to t
   **Undo it** once the scopes are back on (the env change reverted and the container recreated, as above). It runs
   under step 3's OK, which covered it, with a new backup (step 3's block, a new `<HHMM>`) and the container stopped:
   `UPDATE users SET disabled_at = NULL WHERE id <> 1 AND disabled_at BETWEEN <T1> AND <T2>; SELECT changes();`
-  prints N, with step 4's rule for anything else. The bounds leave out anyone offboarded before T1. Nobody can be
+  prints N, with step 4's rule for anything else. Run it as the rollback ran its write: step 1's stop (with its image
+  check), the new backup, the SQL inside step 4's `docker run … sqlite3 -bail … && chown` wrapper, then
+  `docker start <philo container>` (or `docker compose start`) and the bounded wait. The bounds leave out anyone offboarded before T1. Nobody can be
   offboarded between T1 and the undo (see "Release 2: offboarding"), so no one else is caught. Their
   sign-in, keys and push are back as they were. A reactivation through the API (`{"disabled":false}`) does the same
   for one account, since the data step deleted nothing.
@@ -1183,6 +1185,10 @@ every account except `id=1` is disabled. Until the undo, removing their roles at
    - **A fresh, named backup**, copied off the host: upgrade step 1's block with `prerelease2` and
      `philo-prerelease2.db` replaced by `offboard-<HHMM>` and `philo-offboard-<HHMM>.db` (the online form, with
      production running). Expect `ok`, write the count to the log, and copy the three files off the host as there.
+**Steps 2 and 3 are the maintainer's**, at their own terminal. `read` needs a person typing the address, and an
+agent would have to put it back into argv or history. The agent prepares the commands and checks the outcome codes
+they report.
+
 2. **Find them.** Run the people API's checks first (`200`, then `409`), then this. `read` takes the address from
    the terminal, so it stays out of shell history:
    ```sh
@@ -1196,7 +1202,7 @@ every account except `id=1` is disabled. Until the undo, removing their roles at
    Anything but `1`, then `0`, is a stop. `0` on the first line means no such account (or it is `id=1`, which can't
    deactivate itself). `1` on the second means they are already deactivated, most likely by a rollback's data step
    that hasn't been undone. Deactivating them again would write nothing and delete no keys (see "Not during a
-   rollback" above), so tell the maintainer. Either way, run `unset E` and go no further.
+   rollback" above), so tell the maintainer. Either way, run `unset E; rm "$D/admin-key.hdr"` and go no further.
 3. **Deactivate them**, in the same shell:
    ```sh
    id=$(curl -s -H @"$D/admin-key.hdr" "$P" | jq --arg e "$E" "$F | .[0].id")
@@ -1211,7 +1217,10 @@ every account except `id=1` is disabled. Until the undo, removing their roles at
 
 Undo, if it was a mistake: the same `PATCH` with `{"disabled":false}`. That restores sign-in, not the deleted keys.
 
-**Only if no admin can use the API**, the data step instead. Intake is down from step 1 to step 4:
+**Only if no admin can use the API**, the data step instead. First, with `sqlite3 -readonly` in the helper container,
+`SELECT count(*) FROM users WHERE role = 'admin' AND disabled_at IS NULL AND id <> <their id>` must be at least 1. If
+it is 0, this would leave no active admin: do the OL Auth fix first (`philo-admins` and a sign-in). Look up their id
+with a read-only count by address, as the API path does, and disable by id, never by typing the address into SQL. Intake is down from step 1 to step 4:
 
 1. **Stop**, as the roles rollback's step 1 does.
 2. **The OK and a backup**, as its step 3 does, before any write. The consequence to state: this one person can't
