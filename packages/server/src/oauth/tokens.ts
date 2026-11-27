@@ -56,6 +56,11 @@ const REFRESH_PREFIX = 'philo_rt_'
 
 /** Same call, and the same reasoning, as `hashApiKey` — see api-keys.ts. */
 function hashToken(token: string): string {
+  return hashAccessToken(token)
+}
+
+/** How every token here is stored — exported so a route can find the grant in hand. */
+export function hashAccessToken(token: string): string {
   return createHash('sha256').update(token).digest('hex')
 }
 

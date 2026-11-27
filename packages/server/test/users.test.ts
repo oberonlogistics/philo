@@ -321,7 +321,7 @@ describe('deactivation', () => {
       .insert(pushSubscriptions)
       .values({ userId, endpoint: 'https://push.example.com/1', p256dh: 'p', auth: 'a' })
       .run()
-    const lead = await testApp.app.request('/api/v1/leads', json('POST', { name: 'A lead' }, pwa))
+    const lead = await testApp.app.request('/api/v1/leads', json('POST', { name: 'A lead', email: 'lead@example.com' }, pwa))
     expect(lead.status).toBe(201)
     return { admin, userId, pwa, refreshToken, agent: agent.authorization, key: `Bearer ${key}` }
   }
