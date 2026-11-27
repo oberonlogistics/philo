@@ -187,6 +187,29 @@ describe('philo-host.js', () => {
     expect(document.head.lastElementChild).toBe(script)
   })
 
+  it("loads the mapping stylesheet beside the script, with the script's query, so ?v=<tag> versions both", async () => {
+    // Philo injects the script by its absolute URL (apps/web/src/host.ts), so currentScript.src is absolute.
+    window.PhiloHost = undefined
+    const current = Object.getOwnPropertyDescriptor(Document.prototype, 'currentScript')!
+    Object.defineProperty(document, 'currentScript', {
+      configurable: true,
+      get: () => ({ src: 'https://philo.example.test/oberon/philo-host.js?v=ol-v0.8.0-1' }),
+    })
+    try {
+      ;(0, eval)(HOST_SOURCE)
+    } finally {
+      delete (document as unknown as Record<string, unknown>)['currentScript']
+      expect(Object.getOwnPropertyDescriptor(Document.prototype, 'currentScript')).toEqual(current)
+    }
+    const { ctx } = makeCtx()
+    window.PhiloHost!.mount(ctx).catch(() => undefined)
+    await flush()
+    const hrefs = [...document.head.querySelectorAll<HTMLLinkElement>('link[rel="stylesheet"]')].map((l) =>
+      l.getAttribute('href'),
+    )
+    expect(hrefs[2]).toBe('https://philo.example.test/oberon/philo-ol.css?v=ol-v0.8.0-1')
+  })
+
   it('fills the slot with the bell, the switcher and the account menu, in that order', async () => {
     const { ctx } = makeCtx()
     const { result } = await mountWithChrome(ctx)
@@ -500,7 +523,8 @@ describe('philo-host.js', () => {
       await expect(pending).resolves.toEqual({ replaces: ['account-menu'] })
       expect(stub.configure).toHaveBeenCalledTimes(1)
 
-      // A later mount whose chrome never defines the menu: the readiness timeout rejects.
+      // A later mount whose chrome never defines the menu: the readiness timeout rejects, well inside Philo's own
+      // 5 s deadline (HOST_TIMEOUT_MS), so the host's reason is the one Philo logs.
       const again = makeCtx()
       vi.useFakeTimers()
       try {
@@ -509,7 +533,7 @@ describe('philo-host.js', () => {
           () => 'resolved',
           (error: Error) => error.message,
         )
-        await vi.advanceTimersByTimeAsync(10_000)
+        await vi.advanceTimersByTimeAsync(3_000)
         await expect(settled).resolves.toMatch(/ol-account-menu/)
         expect(again.ctx.slot.childElementCount).toBe(0)
       } finally {

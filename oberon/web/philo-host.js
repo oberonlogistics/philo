@@ -2,13 +2,15 @@
  * philo-host.js: Philo's host script for the shared Oberon Logistics chrome.
  *
  * Philo loads it after sign-in when PHILO_WEB_HOST_SCRIPT_URL=/oberon/philo-host.js and calls
- * window.PhiloHost.mount(ctx) (the contract is ADR-0013, "Operator host script in the PWA"). It loads the chrome
- * from OL Auth at ${ctx.issuer}/chrome/v1/, fills the top-bar slot with the bell, the app switcher and the account
- * menu, and replaces Philo's own account menu. Spec: oberon/docs/chrome.md §3.2 and §4.
+ * window.PhiloHost.mount(ctx) (the contract is ADR-0013, "An opt-in operator host script in the PWA, with a top-bar
+ * slot"). It loads the chrome from OL Auth at ${ctx.issuer}/chrome/v1/, fills the top-bar slot with the bell, the app
+ * switcher and the account menu, and replaces Philo's own account menu. Spec: oberon/docs/chrome.md §3.2 and §4.
+ * philo-ol.css is loaded from beside this script with this script's query, so one ?v=<tag> versions both files.
  *
  * Failure rules. Before mount resolves, any failure rejects, so Philo keeps its own menu: the script does not load,
  * defines no OLChrome, the account menu does not upgrade within READY_MS, or it throws or reports an error while it
- * connects. After it resolves, a failure the host can see (the account menu reports an error before the person has
+ * connects. Philo's own deadline (5 s from injecting this script, ADR-0013) also aborts ctx.signal, which rejects the
+ * same way; READY_MS is short enough that the host's own reason is the one Philo logs. After it resolves, a failure the host can see (the account menu reports an error before the person has
  * used it, the menu leaves the slot, or the chrome throws) calls ctx.fallback(), and Philo shows its own menu again.
  * Either way the person can sign out. The script loads in CORS mode (OL Auth answers launch origins with ACAO), so
  * its errors carry its URL; a muted "Script error." names no script and is not counted.
@@ -19,17 +21,35 @@
   'use strict'
 
   const CHROME_PATH = '/chrome/v1/'
-  const MAPPING_CSS = '/oberon/philo-ol.css'
+  // Beside this script, with its query: ?v=<tag> on PHILO_WEB_HOST_SCRIPT_URL versions the stylesheet too, since the
+  // image sends no Cache-Control for /oberon/ (oberon/DEPLOY.md §3.2).
+  const MAPPING_CSS = mappingCssUrl(document.currentScript)
   // The same breakpoint as Philo's own narrow layout (apps/web/src/index.css, `@media (max-width: 760px)`).
   const COMPACT_QUERY = '(max-width: 760px)'
   const THEMES = ['light', 'dark', 'system']
   const AUTH_SCOPE = 'auth:apps auth:account'
   const NOTIFY_SCOPE = 'notify:read'
-  /** How long the account menu may take to upgrade when the chrome defines it after its script has loaded. */
-  const READY_MS = 5000
+  /**
+   * How long the account menu may take to upgrade when the chrome defines it after its script has loaded. Philo gives
+   * the whole mount 5 s from injecting this script (HOST_TIMEOUT_MS in apps/web/src/host.ts), and the downloads come
+   * out of that, so this stays well inside it.
+   */
+  const READY_MS = 2000
 
   /** One load of ol-chrome.js per page, shared by every mount; cleared on failure so a later mount can try again. */
   let pendingChrome = null
+
+  function mappingCssUrl(current) {
+    const src = current && typeof current.src === 'string' ? current.src : ''
+    if (src === '') return '/oberon/philo-ol.css'
+    try {
+      const url = new URL('philo-ol.css', src)
+      url.search = new URL(src).search
+      return url.href
+    } catch {
+      return '/oberon/philo-ol.css'
+    }
+  }
 
   function trimSlash(url) {
     return String(url).replace(/\/+$/, '')
