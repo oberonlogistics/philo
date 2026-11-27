@@ -1,19 +1,19 @@
 # Cutover runbook: production onto the fork, release 1
 
 The steps for switching `https://philo.oberonlogistics.com` from the stock upstream image to the fork's
-`ol-v0.5.1-1`. It is written for an agent running production on the maintainer's behalf. Read all of it before
+`ol-v0.6.0-1`. It is written for an agent running production on the maintainer's behalf. Read all of it before
 the first command. The reasons behind the steps are in [`DEPLOY.md`](DEPLOY.md); this page is the steps.
 
 ## 0. What this release changes
 
 | | Before | After release 1 |
 |---|---|---|
-| Image | `ghcr.io/philo-crm/philo:0.5.1` (stock) | `ghcr.io/oberonlogistics/philo:ol-v0.5.1-1@sha256:<digest>` |
+| Image | `ghcr.io/philo-crm/philo:0.5.1` (stock) | `ghcr.io/oberonlogistics/philo:ol-v0.6.0-1@sha256:<digest>` |
 | Sign-in | Philo's built-in IdP (password) | OL Auth, for the one existing account (`id=1`), which binds by verified email |
 | Notifications | Email and web push | The same, **plus** each new lead, added lead and stage move in the OL Notify feed for the Philo users role |
 | Data | The production volume | **The same volume**, migrated in place by `0013_user_roles` (adds `role`, `role_confirmed_at`, `disabled_at` to `users`) |
 
-**Not in release 1.** These come later as ordinary upgrades (`ol-v0.5.1-2` or a later version: DEPLOY.md §7), with no
+**Not in release 1.** These come later as ordinary upgrades (`ol-v0.6.0-2` or a later version: DEPLOY.md §7), with no
 new window:
 
 - the shared chrome (app switcher, account menu, bell in Philo's top bar), which waits on the host-script seam
@@ -91,29 +91,29 @@ Then take the baseline: run `scripts/health-check.sh` from `oberonlogistics-web`
 
 **GATE 2: the maintainer approves pushing the tag.**
 
-From a checkout of fork `main`, at sync #12 (`ae2f9c5`) or later:
+From a checkout of fork `main`, at the v0.6.0 sync (#15) or later:
 
 ```sh
 git fetch origin
 git diff --name-only v0.5.1 origin/main -- 'packages/server/drizzle/*.sql'   # expect exactly 0013_user_roles.sql
-grep '"version"' package.json                                                # expect 0.5.1
-git tag -a ol-v0.5.1-1 -m "ol-v0.5.1-1" origin/main
-git push origin ol-v0.5.1-1        # this one tag only; never --tags
+grep '"version"' package.json                                                # expect 0.6.0
+git tag -a ol-v0.6.0-1 -m "ol-v0.6.0-1" origin/main
+git push origin ol-v0.6.0-1        # this one tag only; never --tags
 ```
 
 If the diff lists anything but `0013_user_roles.sql`, stop: §7's R2 covers only that migration.
 
 The **Oberon release image** workflow (`ol-release.yml`) runs on the tag. When it passes, copy the
-`ghcr.io/oberonlogistics/philo:ol-v0.5.1-1@sha256:…` line from its job summary into the log. That reference, with its
-digest, is the only image production may run. Never use `:latest`, `:edge` or `:0.5.1` from this package.
+`ghcr.io/oberonlogistics/philo:ol-v0.6.0-1@sha256:…` line from its job summary into the log. That reference, with its
+digest, is the only image production may run. Never use `:latest`, `:edge` or a semver tag from this package.
 
 On the production host, check the image without the data volume:
 
 ```sh
-IMG='ghcr.io/oberonlogistics/philo:ol-v0.5.1-1@sha256:<digest>'
+IMG='ghcr.io/oberonlogistics/philo:ol-v0.6.0-1@sha256:<digest>'
 docker pull "$IMG"
 docker run -d --rm --name philo-imgcheck -p 127.0.0.1:<free port>:3000 "$IMG"
-curl -s http://127.0.0.1:<free port>/version                                          # name philo, version 0.5.1
+curl -s http://127.0.0.1:<free port>/version                                          # name philo, version 0.6.0
 curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:<free port>/oberon/philo-host.js   # 200
 curl -sI http://127.0.0.1:<free port>/ | grep -i content-security-policy              # present
 docker stop philo-imgcheck
@@ -208,7 +208,7 @@ Intake is down from step 1 until step 5. The website's form shows its fallback m
 
 1. `date +%s%3N`: write this down as **T0**. Then `docker stop <philo container>`.
 2. Make the **pre-cutover backup** with the online form from DEPLOYMENT.md § Backup, into
-   `philo-precutover-ol-v0.5.1-1.db` plus `vapid-keys.json` and `oidc-signing-key.json`. Then:
+   `philo-precutover-ol-v0.6.0-1.db` plus `vapid-keys.json` and `oidc-signing-key.json`. Then:
    - Run `PRAGMA integrity_check` on it (expect `ok`).
    - Record `SELECT count(*), max(created_at) FROM leads` (`sqlite3 -readonly` in a helper container; the Philo image
      has no `sqlite3`).
@@ -259,7 +259,7 @@ understands it. Nothing is restored, so nothing is lost. Check with step 6 and a
 **R2: back to stock (only if the fork image itself fails).**
 
 1. Stop the new container.
-2. Make an online backup of the **new** database to `philo-postcutover-ol-v0.5.1-1.db`, and keep it.
+2. Make an online backup of the **new** database to `philo-postcutover-ol-v0.6.0-1.db`, and keep it.
 3. If `SELECT count(*) FROM users` is 1, apply §6 step 5's reversal (rehearsed). Otherwise, stop and ask: the
    maintainer decides between revoking the other accounts' credentials and restoring with carry-over (DEPLOY.md §6).
 4. `docker rm` the new container, `docker rename <philo container>-stock <philo container>`, and `docker start` it.
