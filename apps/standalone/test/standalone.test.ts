@@ -34,6 +34,9 @@ function createWebDir({ withPwaFiles = true } = {}): string {
   writeFileSync(join(dir, 'index.html'), '<!doctype html><title>Philo</title>')
   writeFileSync(join(dir, 'app.js'), 'console.log("philo")')
   writeFileSync(join(dir, 'assets', 'index-abc123.js'), 'console.log("hashed")')
+  // ADR-0013's mounted host-script directory.
+  mkdirSync(join(dir, 'host'))
+  writeFileSync(join(dir, 'host', 'chrome.js'), 'window.PhiloHost = { mount() {} }')
   if (withPwaFiles) {
     writeFileSync(join(dir, 'sw.js'), 'self.addEventListener("push", () => {})')
     writeFileSync(join(dir, 'manifest.webmanifest'), '{"name":"Philo","short_name":"Philo"}')
@@ -184,6 +187,14 @@ describe('caching', () => {
     expect(res.headers.get('cache-control')).toBeNull()
   })
 
+  // An operator's fix to a broken host script must land on the next load,
+  // not when a heuristic freshness runs out (ADR-0013).
+  it('makes a mounted host script revalidate', async () => {
+    const res = await standalone().app.request('/host/chrome.js')
+    expect(res.status).toBe(200)
+    expect(res.headers.get('cache-control')).toBe('no-cache')
+  })
+
   // A cached service worker is a deploy that never lands.
   it.each(['/sw.js', '/manifest.webmanifest'])('makes %s revalidate', async (path) => {
     const res = await standalone().app.request(path)
@@ -249,6 +260,64 @@ describe('security headers', () => {
 
   it('leaves the default policy unchanged with no extra origins', () => {
     expect(pwaContentSecurityPolicy({ connectOrigins: [] })).toBe(pwaContentSecurityPolicy())
+  })
+
+  // ADR-0013: an absolute host script is allowed as that exact URL, never its whole origin.
+  it('allows an absolute host script as its exact URL, without its query', () => {
+    const policy = pwaContentSecurityPolicy({ hostScriptUrl: 'https://chrome.example.com/v1/host.js?v=3' })
+    expect(policy).toContain("script-src 'self' https://chrome.example.com/v1/host.js;")
+    expect(policy.match(/chrome\.example\.com/g)).toHaveLength(1)
+  })
+
+  it('needs nothing more for a host script on the PWA’s own origin', () => {
+    expect(pwaContentSecurityPolicy({ hostScriptUrl: '/host/chrome.js' })).toBe(pwaContentSecurityPolicy())
+  })
+
+  // ADR-0013: the host script's own assets, from the operator's list only.
+  it('adds asset sources to script-src, style-src and font-src as given, and their origins to img-src', () => {
+    const policy = pwaContentSecurityPolicy({
+      hostScriptUrl: '/host/chrome.js',
+      assetOrigins: ['https://chrome.example.com/v1/', 'https://cdn.example.net', 'https://chrome.example.com/fonts/'],
+    })
+    const sources = 'https://chrome.example.com/v1/ https://cdn.example.net https://chrome.example.com/fonts/'
+    expect(policy).toContain(`script-src 'self' ${sources};`)
+    expect(policy).toContain(`style-src 'self' ${sources};`)
+    expect(policy).toContain(`font-src 'self' ${sources};`)
+    // An image is not code: its origin is enough, and named once.
+    expect(policy).toContain("img-src 'self' https://chrome.example.com https://cdn.example.net;")
+    expect(policy).toContain("connect-src 'self';")
+    expect(policy).toContain("frame-src 'self';")
+  })
+
+  it('puts the exact host script URL before the asset sources', () => {
+    const policy = pwaContentSecurityPolicy({
+      hostScriptUrl: 'https://chrome.example.com/v1/host.js',
+      assetOrigins: ['https://chrome.example.com/v1/'],
+    })
+    expect(policy).toContain("script-src 'self' https://chrome.example.com/v1/host.js https://chrome.example.com/v1/;")
+  })
+
+  it('builds the whole policy for an external IdP with a host script and its assets', () => {
+    expect(
+      pwaContentSecurityPolicy({
+        issuer: 'https://id.example.com',
+        connectOrigins: ['https://feed.example.com'],
+        hostScriptUrl: '/host/chrome.js',
+        assetOrigins: ['https://id.example.com/chrome/v1/'],
+      }),
+    ).toBe(
+      "default-src 'self'; script-src 'self' https://id.example.com/chrome/v1/; " +
+        "style-src 'self' https://id.example.com/chrome/v1/; img-src 'self' https://id.example.com; " +
+        "font-src 'self' https://id.example.com/chrome/v1/; connect-src 'self' https://id.example.com https://feed.example.com; " +
+        "worker-src 'self'; manifest-src 'self'; frame-src 'self' https://id.example.com; object-src 'none'; " +
+        "base-uri 'self'; form-action 'self'; frame-ancestors 'none'",
+    )
+  })
+
+  it('leaves the default policy unchanged with no asset origins', () => {
+    expect(pwaContentSecurityPolicy({ assetOrigins: [] })).toBe(pwaContentSecurityPolicy())
+    const external = { issuer: 'https://id.example.com', connectOrigins: ['https://token.example-apis.com'] }
+    expect(pwaContentSecurityPolicy({ ...external, assetOrigins: [] })).toBe(pwaContentSecurityPolicy(external))
   })
 
   it('names an origin only once', () => {

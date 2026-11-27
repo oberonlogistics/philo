@@ -2,10 +2,11 @@ import { Hono } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
 import { cors } from 'hono/cors'
 import { createApiKeyRoutes } from './auth/api-key-routes.ts'
-import type { AccessPolicy } from './auth/access.ts'
+import { accessPolicyOf, type AccessPolicy } from './auth/access.ts'
 import type { ExternalIdp } from './auth/external-idp.ts'
-import { bearerMiddleware, requireAdmin, requireAuth, type AuthDeps, type AuthEnv } from './auth/middleware.ts'
+import { bearerMiddleware, createRequireAdmin, createRequireAuth, type AuthDeps, type AuthEnv } from './auth/middleware.ts'
 import { createAuthGuards, createAuthRoutes, type AuthTuning } from './auth/routes.ts'
+import type { WebHostConfig } from './config.ts'
 import type { Db } from './db/index.ts'
 import type { EmailSenderFactory } from './email/transport.ts'
 import { ChangeFeed } from './events/feed.ts'
@@ -19,7 +20,7 @@ import type { LeadCreatedHook } from './notify.ts'
 import { ensureFirstPartyClient, FIRST_PARTY_CLIENT_ID } from './oauth/first-party.ts'
 import { createOAuthRoutes, createWellKnownRoutes } from './oauth/routes.ts'
 import type { SigningKey } from './oauth/signing-key.ts'
-import { OPENID_SCOPE, OPERATOR_SCOPE } from './oauth/tokens.ts'
+import { MCP_SCOPE, OPENID_SCOPE, OPERATOR_SCOPE } from './oauth/tokens.ts'
 import { LiveFeed, type LiveTuning } from './push/live.ts'
 import { createPushRoutes } from './push/routes.ts'
 import { createSettingsRoutes } from './settings/routes.ts'
@@ -47,10 +48,16 @@ const MAX_BODY_BYTES = 64 * 1024
 const ATTACHMENT_UPLOAD_PATH = new RegExp(`^${API_PREFIX}/leads/\\d+/attachments$`)
 
 /**
+ * What the PWA loads besides sign-in — ADR-0013. Public: it is read before
+ * there is a token, and says nothing the page would not load anyway.
+ */
+const WEB_CONFIG_PATH = `${API_PREFIX}/web/config`
+
+/**
  * Reachable without a token. Everything else under `API_PREFIX` is guarded, so
  * a route added later is private until it is listed here on purpose.
  */
-export const PUBLIC_API_PATHS: ReadonlySet<string> = new Set([`${API_PREFIX}/auth/config`])
+export const PUBLIC_API_PATHS: ReadonlySet<string> = new Set([`${API_PREFIX}/auth/config`, WEB_CONFIG_PATH])
 
 /** A route as Hono registers it: a method and a path with `:param` segments. */
 export type RouteKey = readonly [method: 'GET' | 'POST' | 'PATCH' | 'DELETE', path: string]
@@ -121,7 +128,7 @@ export interface AppOptions {
   signingKey: SigningKey
   /** Replaces the built-in IdP when set — ADR-0006. */
   externalIdp?: ExternalIdp | undefined
-  /** Where roles are decided — ADR-0012. Unset: on the account. */
+  /** Where roles are decided — ADR-0012. Unset: as `externalIdp` implies. */
   access?: AccessPolicy | undefined
   /**
    * The VAPID public key the settings toggle subscribes with. Auto-generated
@@ -155,6 +162,8 @@ export interface AppOptions {
    * real one, built from the stored settings; tests substitute their own.
    */
   createEmailSender?: EmailSenderFactory | undefined
+  /** The operator host script — ADR-0013. Unset: none. */
+  webHost?: WebHostConfig | undefined
 }
 
 /**
@@ -164,13 +173,21 @@ export interface AppOptions {
 function signInConfig(options: AppOptions) {
   const idp = options.externalIdp
   if (idp !== undefined) {
-    return { issuer: idp.issuer, clientId: idp.clientId, scope: idp.scope, resource: idp.resource }
+    return {
+      issuer: idp.issuer,
+      clientId: idp.clientId,
+      scope: idp.scope,
+      resource: idp.resource,
+      // Left out when unconfigured, so the MCP endpoint keeps advertising what it did.
+      ...(idp.agentScope === undefined ? {} : { agentScope: idp.agentScope }),
+    }
   }
   return {
     issuer: options.publicBaseUrl,
     clientId: FIRST_PARTY_CLIENT_ID,
     scope: `${OPENID_SCOPE} ${OPERATOR_SCOPE}`,
     resource: [],
+    agentScope: MCP_SCOPE,
   }
 }
 
@@ -184,8 +201,10 @@ export function createApp(options: AppOptions): Hono<AuthEnv> {
     db: options.db,
     trustProxy: options.trustProxy,
     externalIdp: options.externalIdp,
-    access: options.access,
+    access: options.access ?? accessPolicyOf(options.externalIdp),
   }
+  const requireAuth = createRequireAuth(options.externalIdp)
+  const requireAdmin = createRequireAdmin(options.externalIdp)
   const app = new Hono<AuthEnv>()
   const changes = options.changeFeed ?? new ChangeFeed()
 
@@ -213,9 +232,11 @@ export function createApp(options: AppOptions): Hono<AuthEnv> {
   )
 
   // Responses here carry account data, so they must not sit in a shared cache.
+  // The web config carries none, and a deploy that changes it must land on
+  // the next load, so it revalidates instead.
   app.use(`${API_PREFIX}/*`, async (c, next) => {
     await next()
-    c.res.headers.set('Cache-Control', 'no-store')
+    c.res.headers.set('Cache-Control', c.req.path === WEB_CONFIG_PATH ? 'no-cache' : 'no-store')
   })
 
   app.use(`${API_PREFIX}/*`, bearerMiddleware(deps))
@@ -231,7 +252,13 @@ export function createApp(options: AppOptions): Hono<AuthEnv> {
   })
 
   app.route(`${API_PREFIX}/auth`, createAuthRoutes({ signIn: signInConfig(options) }))
-  app.route(`${API_PREFIX}/api-keys`, createApiKeyRoutes({ db: options.db }))
+  const webConfig = {
+    hostScriptUrl: options.webHost?.scriptUrl ?? null,
+    hostConfig: options.webHost?.config ?? {},
+    hostTokenResources: options.webHost?.tokenResources ?? [],
+  }
+  app.get(WEB_CONFIG_PATH, (c) => c.json(webConfig))
+  app.route(`${API_PREFIX}/api-keys`, createApiKeyRoutes({ db: options.db, externalIdp: options.externalIdp }))
   app.route(
     `${API_PREFIX}/leads`,
     createLeadRoutes({ db: options.db, onLeadCreated: options.onLeadCreated, changes }),

@@ -29,6 +29,32 @@ export interface Config {
    * another origin than its issuer. Bare origins, empty by default.
    */
   webConnectOrigins: string[]
+  /** The operator host script the PWA loads after sign-in — ADR-0013. Off by default. */
+  webHost: WebHostConfig
+  /**
+   * `PHILO_WEB_ASSET_ORIGINS` — ADR-0013: where the host script's own
+   * assets come from, added to `script-src`, `style-src` and `font-src` as
+   * given and to `img-src` by origin. Each an origin, or an origin and a path
+   * prefix ending in `/`. Empty by default.
+   */
+  webAssetOrigins: string[]
+}
+
+/** ADR-0013. Environment only: a script URL is code execution in every person's browser. */
+export interface WebHostConfig {
+  /**
+   * `PHILO_WEB_HOST_SCRIPT_URL`: an absolute `https:` URL (plain `http:` only
+   * for localhost and 127.0.0.1), or a path on the PWA's own origin. Unset
+   * means no script, and the PWA's policy stays `'self'`.
+   */
+  scriptUrl: string | undefined
+  /** `PHILO_WEB_HOST_CONFIG`: handed to the script verbatim. Public, so no secrets. */
+  config: Record<string, unknown>
+  /**
+   * `PHILO_WEB_HOST_TOKEN_RESOURCES`: the RFC 8707 resources the script may
+   * ask the IdP for a token for. Never Philo's own audience.
+   */
+  tokenResources: string[]
 }
 
 export interface ExternalIdpConfig {
@@ -56,6 +82,25 @@ export interface ExternalIdpConfig {
    * that picks the access token's audience from them. Empty by default.
    */
   resource: string[]
+  /**
+   * The two scopes that admit a person and name their role — ADR-0012. Set
+   * means the accounts are externally managed: one per subject, each with the
+   * role its token's scopes name. Unset, an external IdP keeps one account.
+   */
+  roles?: RoleScopes | undefined
+  /**
+   * What an agent should ask the IdP for, advertised by the MCP endpoint's
+   * protected-resource metadata. Defaults to the user scope plus
+   * `offline_access` when the role scopes are set; otherwise unset.
+   */
+  agentScope?: string | undefined
+}
+
+export interface RoleScopes {
+  /** Holding it admits a person as a user. */
+  userScope: string
+  /** Holding it makes them an admin, and admits them on its own. */
+  adminScope: string
 }
 
 const DEFAULT_PORT = 3000
@@ -96,12 +141,64 @@ function parseOptionalUrl(name: string, raw: string | undefined, fallback: strin
   return raw === undefined || raw === '' ? fallback : parseUrl(name, raw)
 }
 
-function parseOidcScope(raw: string | undefined): string {
-  if (raw === undefined || raw.trim() === '') return DEFAULT_OIDC_SCOPE
+function parseOidcScope(raw: string | undefined, roles: RoleScopes | undefined): string {
+  // The PWA's token is the IdP's whole answer for the person, so by default
+  // it asks for both role scopes — ADR-0012.
+  if (raw === undefined || raw.trim() === '') {
+    return roles === undefined ? DEFAULT_OIDC_SCOPE : `${DEFAULT_OIDC_SCOPE} ${roles.userScope} ${roles.adminScope}`
+  }
   const scopes = raw.trim().split(/\s+/)
   if (!scopes.includes('openid')) {
     throw new ConfigError(`PHILO_OIDC_SCOPE must include openid, got ${JSON.stringify(raw)}`)
   }
+  // Asking for neither would get the PWA only tokens this server refuses.
+  if (roles !== undefined && !scopes.includes(roles.userScope) && !scopes.includes(roles.adminScope)) {
+    throw new ConfigError(
+      `PHILO_OIDC_SCOPE must include ${roles.userScope} or ${roles.adminScope} (normally both), got ${JSON.stringify(raw)}`,
+    )
+  }
+  return scopes.join(' ')
+}
+
+/**
+ * RFC 6749 §3.3 scope-token: printable ASCII without space, `"` or `\`. The
+ * value is also quoted into a `WWW-Authenticate` challenge, which is what the
+ * two excluded characters would break.
+ */
+const SCOPE_TOKEN = /^[\x21\x23-\x5b\x5d-\x7e]+$/
+
+function parseScopeToken(name: string, raw: string | undefined): string | undefined {
+  const value = (raw ?? '').trim()
+  if (value === '') return undefined
+  if (!SCOPE_TOKEN.test(value)) {
+    throw new ConfigError(`${name} must be a single scope, without spaces or quotes, got ${JSON.stringify(raw)}`)
+  }
+  return value
+}
+
+/**
+ * Both or neither — ADR-0012: an instance whose IdP can name nobody an admin
+ * cannot be configured, and one that admits everyone as a user lets in every
+ * person able to sign in to anything at that IdP.
+ */
+function parseRoleScopes(env: NodeJS.ProcessEnv): RoleScopes | undefined {
+  const userScope = parseScopeToken('PHILO_OIDC_USER_SCOPE', env['PHILO_OIDC_USER_SCOPE'])
+  const adminScope = parseScopeToken('PHILO_OIDC_ADMIN_SCOPE', env['PHILO_OIDC_ADMIN_SCOPE'])
+  if (userScope === undefined && adminScope === undefined) return undefined
+  if (userScope === undefined || adminScope === undefined) {
+    throw new ConfigError('PHILO_OIDC_USER_SCOPE and PHILO_OIDC_ADMIN_SCOPE must be set together, or neither')
+  }
+  if (userScope === adminScope) {
+    throw new ConfigError(`PHILO_OIDC_USER_SCOPE and PHILO_OIDC_ADMIN_SCOPE must differ, both are ${JSON.stringify(userScope)}`)
+  }
+  return { userScope, adminScope }
+}
+
+function parseAgentScope(raw: string | undefined, roles: RoleScopes | undefined): string | undefined {
+  const scopes = (raw ?? '').trim().split(/\s+/).filter((scope) => scope !== '')
+  if (scopes.length === 0) return roles === undefined ? undefined : `${roles.userScope} offline_access`
+  const bad = scopes.find((scope) => !SCOPE_TOKEN.test(scope))
+  if (bad !== undefined) throw new ConfigError(`PHILO_OIDC_AGENT_SCOPE holds an invalid scope ${JSON.stringify(bad)}`)
   return scopes.join(' ')
 }
 
@@ -129,7 +226,13 @@ function parseOidcResource(raw: string | undefined): string[] {
 }
 
 /** Settings that only mean something when an external issuer is set. */
-const EXTERNAL_ONLY = ['PHILO_OIDC_SCOPE', 'PHILO_OIDC_RESOURCE'] as const
+const EXTERNAL_ONLY = [
+  'PHILO_OIDC_SCOPE',
+  'PHILO_OIDC_RESOURCE',
+  'PHILO_OIDC_USER_SCOPE',
+  'PHILO_OIDC_ADMIN_SCOPE',
+  'PHILO_OIDC_AGENT_SCOPE',
+] as const
 
 /**
  * All or nothing: an issuer without the PWA's client id would leave the app
@@ -166,13 +269,16 @@ function parseExternalIdp(env: NodeJS.ProcessEnv): ExternalIdpConfig | undefined
     .split(',')
     .map((id) => id.trim())
     .filter((id) => id !== '' && id !== clientId)
+  const roles = parseRoleScopes(env)
   return {
     issuer,
     clientId,
     audience: audience.length === 0 ? undefined : audience,
     agentClientIds,
-    scope: parseOidcScope(env['PHILO_OIDC_SCOPE']),
+    scope: parseOidcScope(env['PHILO_OIDC_SCOPE'], roles),
     resource: parseOidcResource(env['PHILO_OIDC_RESOURCE']),
+    roles,
+    agentScope: parseAgentScope(env['PHILO_OIDC_AGENT_SCOPE'], roles),
   }
 }
 
@@ -211,6 +317,210 @@ function parseOriginList(name: string, raw: string | undefined): string[] {
 }
 
 /**
+ * The characters a host script URL's path may hold. It lands in `script-src`
+ * as an exact URL, so nothing that ends a source (whitespace, `,`, `;`) or
+ * reads as a keyword's quote may get there; `URL` percent-encodes whitespace
+ * but leaves the rest alone. It must not end in `/`, which CSP reads as a
+ * prefix rather than that exact URL, and holds no `%`: a server may decode
+ * `%2F` or `%5C` before routing, as with the asset prefixes.
+ */
+const SAFE_URL_PATH = /^\/[A-Za-z0-9._~/-]*[A-Za-z0-9._~-]$/
+
+/** A dot segment, plain or percent-encoded: refused rather than left to whoever resolves it. */
+const DOT_SEGMENT = /(^|\/)(\.|%2e){1,2}(\/|$)/i
+
+function parseHostScriptUrl(raw: string | undefined): string | undefined {
+  const value = (raw ?? '').trim()
+  if (value === '') return undefined
+  const refuse = (why: string) =>
+    new ConfigError(
+      `PHILO_WEB_HOST_SCRIPT_URL must be an absolute https URL or a path on the app's origin (${why}), got ${JSON.stringify(value)}`,
+    )
+  if (value.includes('#')) throw refuse('no fragment')
+  const [path = '', query] = splitQuery(value)
+  if (value.startsWith('/')) {
+    // `//host` and `/\host` are other origins to a browser.
+    if (!SAFE_URL_PATH.test(path) || path.startsWith('//')) throw refuse('a plain path')
+    if (DOT_SEGMENT.test(path)) throw refuse('no dot segments')
+    if (query !== undefined && /\s/.test(query)) throw refuse('no whitespace')
+    return value
+  }
+  let url: URL
+  try {
+    url = new URL(value)
+  } catch {
+    throw refuse('not an absolute URL')
+  }
+  if (!/^[a-z0-9.-]+$/.test(url.hostname)) throw refuse('not a plain host name')
+  if (url.protocol === 'http:') {
+    if (!LOCAL_HOSTS.has(url.hostname)) throw refuse('plain http only for localhost and 127.0.0.1')
+  } else if (url.protocol !== 'https:') {
+    throw refuse('https only')
+  }
+  if (url.username !== '' || url.password !== '' || value.slice(0, value.indexOf(url.host)).includes('@')) {
+    throw refuse('no credentials')
+  }
+  // As written, so the URL in the policy is the one the PWA loads.
+  const rawPath = path.slice(path.indexOf('//') + 2).replace(/^[^/]*/, '')
+  if (rawPath !== url.pathname || !SAFE_URL_PATH.test(url.pathname) || DOT_SEGMENT.test(url.pathname)) {
+    throw refuse('a plain path')
+  }
+  if (query !== undefined && /\s/.test(query)) throw refuse('no whitespace')
+  return url.href
+}
+
+function splitQuery(value: string): [string, string | undefined] {
+  const at = value.indexOf('?')
+  return at === -1 ? [value, undefined] : [value.slice(0, at), value.slice(at + 1)]
+}
+
+function parseHostConfig(raw: string | undefined): Record<string, unknown> {
+  if (raw === undefined || raw.trim() === '') return {}
+  let value: unknown
+  try {
+    value = JSON.parse(raw)
+  } catch {
+    throw new ConfigError(`PHILO_WEB_HOST_CONFIG must be a JSON object, got ${JSON.stringify(raw)}`)
+  }
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new ConfigError(`PHILO_WEB_HOST_CONFIG must be a JSON object, got ${JSON.stringify(raw)}`)
+  }
+  return value as Record<string, unknown>
+}
+
+/**
+ * Compared as parsed URLs, so the case of the scheme and host and a default
+ * port don't matter, and without a trailing slash: an IdP treats `…/api` and
+ * `…/api/` as one audience often enough. A value that doesn't parse is
+ * compared as written.
+ */
+function sameResource(a: string, b: string): boolean {
+  return normalResource(a) === normalResource(b)
+}
+
+function normalResource(value: string): string {
+  let href = value
+  try {
+    href = new URL(value).href
+  } catch {
+    // As written.
+  }
+  // A loop, not `/\/+$/`: that regex is quadratic on a long run of `/`
+  // followed by anything else.
+  let end = href.length
+  while (end > 0 && href[end - 1] === '/') end -= 1
+  return href.slice(0, end)
+}
+
+/**
+ * RFC 8707 resources, as `PHILO_OIDC_RESOURCE`. `own` is everything a token
+ * for Philo itself is for: a host script must never be able to mint one.
+ */
+function parseHostTokenResources(raw: string | undefined, own: readonly string[]): string[] {
+  const values = (raw ?? '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter((value) => value !== '')
+  for (const value of values) {
+    let url: URL | undefined
+    try {
+      url = new URL(value)
+    } catch {
+      url = undefined
+    }
+    if (url === undefined || value.includes('#') || (url.protocol !== 'http:' && url.protocol !== 'https:')) {
+      throw new ConfigError(
+        `PHILO_WEB_HOST_TOKEN_RESOURCES values must be http or https URLs without a fragment, got ${JSON.stringify(value)}`,
+      )
+    }
+    if (own.some((mine) => sameResource(mine, value))) {
+      throw new ConfigError(
+        `PHILO_WEB_HOST_TOKEN_RESOURCES must not name Philo's own audience, got ${JSON.stringify(value)}`,
+      )
+    }
+  }
+  return values
+}
+
+/** A path prefix's segments: nothing a CSP reads specially, and no `%`, which a server may decode before routing. */
+const SAFE_PATH_PREFIX = /^(\/[A-Za-z0-9._~-]+)*\/$/
+
+/**
+ * Each entry lands verbatim in `script-src`, so it is held to an origin
+ * (`https:`, plain `http:` only for local development), optionally with a
+ * path prefix ending in `/`. A wildcard, a scheme-only source, a keyword, a
+ * nonce or hash, a query, a fragment or a dot segment stops the process
+ * instead. ADR-0013 says why a path is defense in depth, not a boundary.
+ */
+function parseAssetOrigins(raw: string | undefined): string[] {
+  const name = 'PHILO_WEB_ASSET_ORIGINS'
+  const sources: string[] = []
+  for (const entry of (raw ?? '').split(',').map((e) => e.trim())) {
+    if (entry === '') continue
+    const refuse = (why: string) =>
+      new ConfigError(
+        `${name} entries must be https origins, optionally with a path prefix ending in / (${why}), got ${JSON.stringify(entry)}`,
+      )
+    let url: URL
+    try {
+      url = new URL(entry)
+    } catch {
+      throw refuse('not an absolute URL')
+    }
+    if (!/^[a-z0-9.-]+$/.test(url.hostname)) throw refuse('not a plain host name')
+    if (url.protocol === 'http:') {
+      if (!LOCAL_HOSTS.has(url.hostname)) throw refuse('plain http only for localhost and 127.0.0.1')
+    } else if (url.protocol !== 'https:') {
+      throw refuse('https only')
+    }
+    if (url.username !== '' || url.password !== '' || /[?#@]/.test(entry)) throw refuse('no credentials, query or fragment')
+    // The path as written, so a dot segment the parser would resolve away is
+    // refused rather than quietly changed into a different prefix.
+    const afterScheme = entry.slice(entry.indexOf('//') + 2)
+    const slash = afterScheme.indexOf('/')
+    const rawPath = slash === -1 ? '/' : afterScheme.slice(slash)
+    if (rawPath !== url.pathname || !SAFE_PATH_PREFIX.test(rawPath) || /(^|\/)\.\.?\//.test(rawPath)) {
+      throw refuse('a path prefix is plain segments ending in /')
+    }
+    const source = url.pathname === '/' ? url.origin : `${url.origin}${url.pathname}`
+    if (!sources.includes(source)) sources.push(source)
+  }
+  return sources
+}
+
+/** Settings that only mean something beside a host script. */
+const HOST_SCRIPT_ONLY = ['PHILO_WEB_HOST_CONFIG', 'PHILO_WEB_HOST_TOKEN_RESOURCES', 'PHILO_WEB_ASSET_ORIGINS'] as const
+
+function parseWebHost(
+  env: NodeJS.ProcessEnv,
+  urls: { publicBaseUrl: string; mcpUrl: string },
+  externalIdp: ExternalIdpConfig | undefined,
+): WebHostConfig {
+  const scriptUrl = parseHostScriptUrl(env['PHILO_WEB_HOST_SCRIPT_URL'])
+  if (scriptUrl === undefined) {
+    const stray = HOST_SCRIPT_ONLY.find((name) => (env[name] ?? '').trim() !== '')
+    if (stray !== undefined) throw new ConfigError(`${stray} needs PHILO_WEB_HOST_SCRIPT_URL: it applies only to a host script`)
+  }
+  const own =
+    externalIdp === undefined
+      ? [urls.publicBaseUrl, urls.mcpUrl]
+      : [...(externalIdp.audience ?? []), ...externalIdp.resource]
+  const tokenResources = parseHostTokenResources(env['PHILO_WEB_HOST_TOKEN_RESOURCES'], own)
+  // With no audience, Philo's API checks none: any token the issuer gives the
+  // PWA's client would act there, whatever resource it was asked for.
+  if (tokenResources.length > 0 && externalIdp !== undefined && externalIdp.audience === undefined) {
+    throw new ConfigError(
+      "PHILO_WEB_HOST_TOKEN_RESOURCES needs PHILO_OIDC_AUDIENCE: without it, a token the host script gets could act at Philo's API",
+    )
+  }
+  return {
+    scriptUrl,
+    config: parseHostConfig(env['PHILO_WEB_HOST_CONFIG']),
+    tokenResources,
+  }
+}
+
+/**
  * Strict rather than truthy. `PHILO_TRUSTED_PROXY=flase` silently meaning "yes"
  * would decide a security question by typo, and this setting is only ever set on
  * purpose, so there is nothing to be lenient for.
@@ -229,14 +539,37 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   // compose variable must not silently park state in the working directory.
   const dataDir = env['PHILO_DATA_DIR'] || DEFAULT_DATA_DIR
   const publicBaseUrl = parsePublicBaseUrl(env['PHILO_PUBLIC_BASE_URL'], port)
+  const mcpUrl = parseOptionalUrl('PHILO_MCP_URL', env['PHILO_MCP_URL'], `${publicBaseUrl}/mcp`)
+  const externalIdp = parseExternalIdp(env)
   return {
     port,
     dataDir: resolve(dataDir),
     publicBaseUrl,
     trustProxy: parseTrustProxy(env['PHILO_TRUSTED_PROXY']),
     appUrl: parseOptionalUrl('PHILO_APP_URL', env['PHILO_APP_URL'], publicBaseUrl),
-    mcpUrl: parseOptionalUrl('PHILO_MCP_URL', env['PHILO_MCP_URL'], `${publicBaseUrl}/mcp`),
-    externalIdp: parseExternalIdp(env),
+    mcpUrl,
+    externalIdp,
     webConnectOrigins: parseOriginList('PHILO_WEB_CONNECT_ORIGINS', env['PHILO_WEB_CONNECT_ORIGINS']),
+    webHost: parseWebHost(env, { publicBaseUrl, mcpUrl }, externalIdp),
+    webAssetOrigins: parseAssetOrigins(env['PHILO_WEB_ASSET_ORIGINS']),
   }
+}
+
+/**
+ * Settings that load but are probably not what the operator meant, for boot
+ * to print. Each is legal on purpose, so it warns rather than refusing.
+ */
+export function configWarnings(config: Pick<Config, 'externalIdp'>): string[] {
+  const warnings: string[] = []
+  const idp = config.externalIdp
+  // Legal for an IdP that refuses the admin scope to the PWA's client — but
+  // the PWA's token is the IdP's whole answer for the person (ADR-0012), so
+  // every PWA sign-in then demotes its person to user.
+  if (idp?.roles !== undefined && !idp.scope.split(' ').includes(idp.roles.adminScope)) {
+    warnings.push(
+      `PHILO_OIDC_SCOPE does not ask for ${idp.roles.adminScope}, so every PWA sign-in demotes its person to user ` +
+        'and no admin survives one. Add it unless the provider refuses it to this client on purpose.',
+    )
+  }
+  return warnings
 }
