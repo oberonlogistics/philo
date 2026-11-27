@@ -1219,8 +1219,10 @@ Undo, if it was a mistake: the same `PATCH` with `{"disabled":false}`. That rest
 
 **Only if no admin can use the API**, the data step instead. First, with `sqlite3 -readonly` in the helper container,
 `SELECT count(*) FROM users WHERE role = 'admin' AND disabled_at IS NULL AND id <> <their id>` must be at least 1. If
-it is 0, this would leave no active admin: do the OL Auth fix first (`philo-admins` and a sign-in). Look up their id
-with a read-only count by address, as the API path does, and disable by id, never by typing the address into SQL. Intake is down from step 1 to step 4:
+it is 0, this would leave no active admin: do the OL Auth fix first (`philo-admins` and a sign-in). The maintainer runs this
+fallback at their own terminal, as with steps 2 and 3. They look up the id read-only (`SELECT id FROM users WHERE
+lower(email) = lower('<address>')`, with a leading space so the command stays out of shell history), then disable by
+that id. The agent never types the address. Intake is down from step 1 to step 4:
 
 1. **Stop**, as the roles rollback's step 1 does.
 2. **The OK and a backup**, as its step 3 does, before any write. The consequence to state: this one person can't
