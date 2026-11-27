@@ -106,8 +106,9 @@ Every commit, in every branch, follows upstream's rules, so any of them can go u
    because an `up/` branch has no `oberon/` directory.
 4. Push to `origin` and open the PR against upstream from the fork:
    `gh pr create -R philo-crm/philo --head oberonlogistics:up/<slug> --base main`.
-5. Bugbot does not run on fork PRs, so upstream needs a human review. Get the PR to green CI and
-   a clean independent review, then **ask the maintainer to review and merge it. Never merge an
+5. Upstream's Bugbot reviews a fork PR when its author has write access to `philo-crm/philo`, or
+   while the PR carries the `bugbot` label (philo-crm/philo#73). Get the PR to green CI, a clean
+   independent review and Bugbot's verdict, then **ask the maintainer to review and merge it. Never merge an
    upstream PR yourself.**
 6. Once it merges, the change reaches the fork with the next upstream sync. Delete `up/<slug>`
    from `origin`.
@@ -144,8 +145,8 @@ Never rebase `main`, and never force-push `main` or any branch someone else may 
 
 Upstream's two-iteration review cap applies. If the second review still finds blockers, stop and
 escalate. Bugbot is not configured in the fork, because it has no `CLAUDE_CODE_OAUTH_TOKEN` or
-`BUGBOT_GH_TOKEN`. Until it is, a fork PR shows a failing or skipped Bugbot check; that check is
-not part of the fork merge bar.
+`BUGBOT_GH_TOKEN`. Its preflight job notices that and skips the review cleanly; a skipped Bugbot
+check is not part of the fork merge bar.
 
 ## Versions and releases
 
