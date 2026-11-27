@@ -362,7 +362,9 @@ PHILO_WEB_CONNECT_ORIGINS=https://notify.oberonlogistics.com
   `/media/…`. Listing the prefix and not the origin matters, because OL Auth hosts uploads (ADR-0013, "Trust"). It is
   safe as a prefix because OL Auth serves `/chrome/v1/` as an exact list of files: any other path under it is a 404,
   nothing there redirects, and a `..%2F` path matches no file. Its uploads are images sent with `nosniff` and
-  `default-src 'none'`, so even a path that slipped the prefix couldn't run as script or style.
+  `default-src 'none'`, so even a path that slipped the prefix couldn't run as script or style. Tile icons and avatars
+  must therefore be OL Auth uploads: the chrome draws `icon_url` and `avatar_url` as `<img>`, and an image on any other
+  origin is blocked by the policy (cosmetic only, the tile or menu still works).
 - **Connect.** The issuer is already in `connect-src` and `frame-src` (from `PHILO_OIDC_ISSUER`), so only Notify is
   listed.
 - **Inline styles.** None needed. The chrome styles its shadow roots with constructable stylesheets

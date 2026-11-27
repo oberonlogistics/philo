@@ -661,7 +661,9 @@ runs it or gives a new one. Re-check this section against the release's own comm
 - [ ] **The maintainer holds the Philo admins role** (`philo-admins`) at OL Auth **before the first sign-in on
   release 2** (identity spec §4). Roles come from scopes from then on: without the admins role, `id=1` signs in as a
   user and nobody can reach Server settings.
-- [ ] **Everyone else who should use Philo** is in `philo-users` (or `philo-admins`). Anyone outside both is refused.
+- [ ] **Everyone who should use Philo** is in `philo-users`; admins, the maintainer included, are in both (as release 1's
+  §2 puts it). Notify posts to `philo-users` (`OL_NOTIFY_ROLE`), so an admin only in `philo-admins` signs in but gets no
+  new-lead notifications in the bell. Anyone outside both roles is refused.
 - [ ] **The `philo` client** holds `auth:apps`, `auth:account` and `notify:read`, with the audiences
   `https://auth.oberonlogistics.com/api` and `https://notify.oberonlogistics.com`, and is first-party (identity spec
   §5, "Public client"). Without them Philo works, but the chrome falls back to Philo's own menu.
@@ -670,8 +672,27 @@ runs it or gives a new one. Re-check this section against the release's own comm
 - [ ] **For agents** (identity spec §5): the Philo resource and both scopes are `dynamic_clients: true`, and the
   rehearsal client `philo-dev` is **deleted** (identity spec §4.3 step 4), because `*` admits every client OL Auth
   issued a Philo token to.
-- [ ] **If release 1 cut over more than 30 days ago**, `id=1`'s role confirmation has lapsed (identity spec §4.4): its
-  API keys answer 401 until the maintainer signs in once on release 2 (the upgrade, step 3).
+- [ ] **If nobody has used the PWA for 30 days**, `id=1`'s role confirmation has lapsed (identity spec §4.4). On
+  release 1 every admitted token refreshes it (`keepConfirmed` in `external-idp.ts`, at most hourly), so what counts is
+  the last sign-in or agent request, not the cutover date. The rehearsal below reads it. Once the role scopes are on, a
+  lapsed `id=1` fails `hasAccess` until the maintainer signs in on release 2 (the upgrade, step 3): its API keys answer
+  401, and the admin fallback for new-lead email and the VAPID contact skip it. Do step 3 right after step 2.
+
+### Release 2: working directory
+
+Release 2 has its own, set up like §3's helpers, with `vars.sh` naming the release-2 image. Everything below that
+borrows a §5–§7 command runs it with this `vars.sh`, not release 1's.
+
+```sh
+umask 077
+mkdir -p ~/philo-release2-<date> && cd ~/philo-release2-<date>
+printf "D='%s'\n" "$PWD" > vars.sh    # paths and names only, never a secret
+printf "IMG='%s'\n" 'ghcr.io/oberonlogistics/philo:<tag>@sha256:<digest>' >> vars.sh
+grep '^SECRET_FILE=' ~/philo-cutover-<release 1 date>/vars.sh >> vars.sh   # the path, for §5's rebuild
+cp ~/philo-cutover-<release 1 date>/wait.sh .
+```
+
+Keep a `log.md` here, as §1 says.
 
 ### Release 2: checks before the upgrade (read-only)
 
@@ -717,13 +738,27 @@ PHILO_WEB_ASSET_ORIGINS=https://auth.oberonlogistics.com/chrome/v1/
 PHILO_WEB_CONNECT_ORIGINS=https://notify.oberonlogistics.com
 ```
 
-The same rules as §5: no quotes, no comment after a value. `*` means "any client", but only on an image that
-contains philo-crm/philo#79; on an older one it is a literal client id that admits no agent, so check the image
-before relying on it (the agent check in the upgrade, step 6).
+The same rules as §5: no quotes, no comment after a value. Check that no placeholder is left (Philo's checks accept a
+literal `<tag>` in the script URL):
 
-**Test the file on a throwaway container** exactly as §5 does, with the release-2 image. Also check, on that
-container, that boot **fails** when `PHILO_OIDC_USER_SCOPE` is set without `PHILO_OIDC_ADMIN_SCOPE` (identity spec
-§3), by running it once more with `-e PHILO_OIDC_ADMIN_SCOPE=` added. On the good run, the log must show
+```sh
+grep -n '<' /<deploy dir>/philo-ol.env.public      # nothing
+```
+
+`*` means "any client", but only on an image that contains philo-crm/philo#79; on an older one it is a literal client
+id that admits no agent. The throwaway container below proves which one the image is.
+
+**Test the file on a throwaway container** exactly as §5 does, with the release-2 image. Then run it twice more, each
+time with one `-e` added. Here the failed wait is the expected result, not a stop: read
+`docker logs philo-envcheck 2>&1 | tail -5`, then `docker rm -f philo-envcheck`.
+
+- `-e PHILO_OIDC_ADMIN_SCOPE=`: boot **fails** with `PHILO_OIDC_USER_SCOPE and PHILO_OIDC_ADMIN_SCOPE must be set
+  together, or neither` (empty counts as unset; identity spec §3).
+- `-e PHILO_OIDC_AUDIENCE=`: boot **fails** with `PHILO_OIDC_AGENT_CLIENT_IDS=* needs PHILO_OIDC_AUDIENCE`. That line
+  is the proof the image contains #79. An older image reads `*` as a client id and fails later, on
+  `PHILO_WEB_HOST_TOKEN_RESOURCES needs PHILO_OIDC_AUDIENCE`: that is the wrong image, so stop.
+
+On the good run, the log must show
 `identity:        external IdP https://auth.oberonlogistics.com (operator client philo), roles from scopes philo:user / philo:admin`,
 and the Notify line as in §5. Then, before removing it:
 
@@ -738,9 +773,62 @@ The web config names `/oberon/philo-host.js?v=<tag>`, the config above and both 
 `https://auth.oberonlogistics.com` in `img-src`, `connect-src` and `frame-src`, Notify in `connect-src`, and no
 `'unsafe-inline'`. The script check prints `1`.
 
+### Release 2: rehearse role mode on a copy
+
+Role mode has never run on production's data, so it runs once on a copy first. This is §6 again, with §1's data
+rules throughout, under a new waiver in §1's terms (the maintainer gives one, with a date, or runs it). Only what
+differs from §6 is written here. As in §6, there is no sign-in on the copy.
+
+1. **Today's env**, rebuilt from the running release-1 container without its OL parts. The secret passes through
+   `grep` into nothing and is never printed:
+   ```sh
+   . ~/philo-release2-<date>/vars.sh
+   ( umask 077; docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' <philo container> \
+       | grep -vE '^(OL_|PHILO_OIDC_|PHILO_WEB_)' > "$D/today.env" )
+   grep -cE '^(OL_|PHILO_OIDC_|PHILO_WEB_)' "$D/today.env"          # 0
+   ```
+   `"$D/today.env"` is "today's env file" in §6's commands.
+2. **Set up the copy** with §6's block as written. Its `grep '^PHILO_OIDC_'` now picks up release 2's identity
+   lines: `grep -c '_SCOPE=' "$D/identity.env"` is 3, and `grep -cx 'PHILO_OIDC_AGENT_CLIENT_IDS=\*' "$D/identity.env"`
+   is 1.
+3. **Before the first boot**, with §6's helper and the container stopped:
+   - `PRAGMA integrity_check` is `ok`;
+   - `SELECT count(*), max(created_at) FROM __drizzle_migrations` is `14|1795723669355` (no new migration expected; any
+     other answer is a stop);
+   - `SELECT count(*) FROM users` is **U0**, and `SELECT count(*) FROM users WHERE id = 1 AND role = 'admin' AND
+     disabled_at IS NULL` is 1;
+   - `SELECT max(role_confirmed_at) FROM users WHERE id = 1`, against `date +%s%3N`. More than 2592000000 ms (30 days)
+     apart means `id=1` has lapsed (the prerequisite above): write it down and tell the maintainer.
+4. **Boot `"$IMG"` with `identity.env`**, with §6's scratch-run command. The wait reports `running healthy`, and the
+   boot log (`docker logs philo-scratch 2>&1 | grep -E '^  identity'`) shows
+   `identity:        external IdP https://auth.oberonlogistics.com (operator client philo), roles from scopes philo:user / philo:admin`.
+   With `*` set, a healthy boot on this image (#79, proven above) also confirms the audience and both scopes are in
+   place.
+5. **API keys answer.** With the copy running, the maintainer runs this on the host (the key stays with them):
+   `curl -s -o /dev/null -w '%{http_code}\n' -H 'Authorization: Bearer <key>' http://127.0.0.1:<port>/api/v1/funnels`.
+   Expect `200`, or `401` exactly when step 3 found `id=1` lapsed. Anything else is a stop.
+6. **After stopping it:** the migration count, U0 and the `id=1` admin count are unchanged, and `PRAGMA integrity_check`
+   is `ok`. Booting in role mode rewrites no role.
+7. **`id=1` stays admin on sign-in**, by the code path, since no OL Auth token reaches the copy: `id=1` is already
+   bound, so its token finds it by subject (`findOrProvisionAccount` in `external-idp.ts`), and with `philo:admin`
+   `confirmRole` keeps `admin` and refreshes the confirmation. Only a PWA token without `philo:admin` demotes it, which
+   is why the maintainer must hold `philo-admins` first. The live check is the upgrade's steps 3 and 5.
+8. **Delete the copy straight away** with §6 step 10, then `rm "$D/today.env"`.
+
 ### Release 2: the upgrade
 
-1. Back up to a named file (§7 step 2's command, into `"$D/prerelease2"`).
+1. Back up to a named file. This is CUTOVER §7 step 2's online backup, with release 2's directory and file name
+   (production keeps running, and the online form is safe on a live database):
+   ```sh
+   . ~/philo-release2-<date>/vars.sh
+   ( umask 077; mkdir -p "$D/prerelease2" )
+   docker run --rm -v <data volume>:/data -v "$D/prerelease2":/backup alpine sh -c \
+     'apk add --no-cache sqlite >/dev/null &&
+      sqlite3 /data/philo.db ".backup /backup/philo-prerelease2.db" &&
+      cp /data/oidc-signing-key.json /data/vapid-keys.json /backup/ &&
+      sqlite3 -readonly /backup/philo-prerelease2.db "PRAGMA integrity_check; SELECT count(*), max(created_at) FROM leads;"'
+   ```
+   Expect `ok`, write the count to the log, and copy the three files off the host as §7 step 2 does.
 2. Set the release-2 tag and digest, pass the new `philo-ol.env`, start it, and wait: `sh "$D/wait.sh" <philo container>`.
 3. The maintainer signs in to the PWA through OL Auth. Check: the top bar shows the bell, the app switcher (with the
    Philo tile current) and the shared account menu, and not Philo's own; Server settings is reachable from the
@@ -755,9 +843,11 @@ The web config names `/oberon/philo-host.js?v=<tag>`, the config above and both 
    (`/.well-known/oauth-protected-resource/mcp`) advertises `philo:user philo:admin offline_access`.
 7. `scripts/health-check.sh` and one test lead, with the maintainer's OK.
 
-### Release 2: rollback (environment only)
+### Release 2: rollback
 
-The image is compatible with release 1's env, so a rollback is an env change and a restart, with no data step.
+The image is compatible with release 1's env, so most rollbacks are an env change and a restart. Removing the role
+scopes once release 2 has created accounts is the exception: it may need a data step (below). Prefer the narrowest
+rollback that fixes the trouble.
 
 - **Chrome trouble only:** remove the five chrome lines, all together (`PHILO_WEB_HOST_CONFIG`,
   `PHILO_WEB_HOST_TOKEN_RESOURCES` and `PHILO_WEB_ASSET_ORIGINS` without `PHILO_WEB_HOST_SCRIPT_URL` are a startup
@@ -765,12 +855,45 @@ The image is compatible with release 1's env, so a rollback is an env change and
   the policy is release 1's.
 - **Agent trouble only:** remove `PHILO_OIDC_AGENT_CLIENT_IDS` and restart. Self-registered agents are refused from
   the next request; API keys keep working.
-- **Roles trouble:** also remove the three `PHILO_OIDC_*_SCOPE` lines, together (one without the other is a startup
-  error), and `PHILO_OIDC_AGENT_CLIENT_IDS`. Restart. The boot line ends `, one account` again. **This does not shut out accounts created on release 2:**
-  in one-account mode a subject that is already bound still signs in, with the role stored on its account, and the
-  30-day rule is off (`external-idp.ts`, `findOrProvisionOnlyAccount`). If that matters, an admin deactivates those
-  accounts.
+- **Roles trouble: fix it at OL Auth first, with the scopes still on.** Someone removed from both roles is refused
+  (`insufficient_scope`) from their first token without a Philo scope, in the PWA and through agents, and their stored
+  role lapses after 30 days. A wrong role is corrected by changing the OL Auth role and signing in again.
+- **Roles trouble that OL Auth can't fix:** also remove the three `PHILO_OIDC_*_SCOPE` lines, together (one without
+  the other is a startup error), and `PHILO_OIDC_AGENT_CLIENT_IDS` (`*` needs both scopes). Restart. The boot line
+  ends `, one account` again. **This does not shut out accounts created on release 2.** In one-account mode a subject
+  that is already bound still signs in with the role stored on its account, its API keys keep working, scopes are
+  ignored and the 30-day rule is off (`findOrProvisionOnlyAccount` in `external-idp.ts`, `hasAccess` in
+  `access.ts`). Another `philo-admins` member would stay admin indefinitely.
+
+  This build can't deactivate anyone: people management (ADR-0012) isn't built, so neither the UI nor the API sets
+  `disabled_at`. So, with the container stopped, count the other accounts:
+  ```sh
+  docker run --rm -v <data volume>:/data alpine sh -c 'apk add --no-cache sqlite >/dev/null &&
+    sqlite3 -readonly /data/philo.db "SELECT count(*) FROM users WHERE id <> 1"'
+  ```
+  If it is 0, the env change is enough. Otherwise removing the scopes needs a **data step, only with the maintainer's OK** and after a fresh backup
+  (the upgrade's step 1, into a new file name). Write down `date +%s%3N` as **T1**, then, with the container still
+  stopped:
+  ```sh
+  docker run --rm -v <data volume>:/data alpine sh -c 'apk add --no-cache sqlite >/dev/null && sqlite3 -bail /data/philo.db "
+    UPDATE users SET disabled_at = CAST(unixepoch('\''subsec'\'') * 1000 AS integer) WHERE id <> 1 AND disabled_at IS NULL;
+    SELECT changes();" && chown -R 1000:1000 /data'
+  ```
+  `disabled_at` is milliseconds (`timestamp_ms` in `schema.ts`; migration 0013 writes `role_confirmed_at` the same
+  way). `SELECT changes()` prints the count from above. `hasAccess` then refuses those accounts' sign-ins, API keys
+  and push. Undo it once the scopes are back with
+  `UPDATE users SET disabled_at = NULL WHERE id <> 1 AND disabled_at >= <T1>`, which leaves anyone offboarded earlier
+  (below) disabled. People management (`up/user-management`, in progress) replaces this data step with its deactivation API once it lands in the fork; this runbook is updated then.
 - **The image itself fails:** set release 1's tag and digest back, with release 1's `philo-ol.env`. If the release
   carried a migration after all, §8 R2's reasoning (back to stock) applies instead; check `__drizzle_migrations` first.
 
-Then the upgrade's steps 3, 4 and 7 again, expecting Philo's own menu.
+Then the upgrade's steps 3, 4 and 7 again: expecting Philo's own menu after a chrome, roles or image rollback, and the
+shared chrome still after an agent-only one.
+
+### Release 2: offboarding
+
+To remove someone at once, remove their roles at OL Auth. Their PWA and agent access ends with their current tokens,
+but their Philo API keys still work for up to 30 days (until `role_confirmed_at` lapses, `hasAccess`). For an
+immediate cut-off, use the rollback's `disabled_at` data step for that one account, with the same OK, backup and
+stopped container: `WHERE email = '<their address, in lower case>' AND id <> 1 AND disabled_at IS NULL` in place of
+its `WHERE`, and `SELECT changes()` must print 1. Do this until people management lands.
