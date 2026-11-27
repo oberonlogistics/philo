@@ -71,8 +71,8 @@ users, ADR-0012).
 | 8 | `up/roles-authz` (MU-a) | #68 | merged | a role on every account and a guard on every route | 7 | Implements 0012 |
 | 9 | `up/pwa-csp` (CH-UP-1) | #67, #76 | merged | a CSP for the PWA shell, with `PHILO_WEB_CONNECT_ORIGINS` | — | No |
 | 10 | `up/oidc-multi-user` (MU-b) | #77 | merged (v0.7.0) | G3, G5, G6: roles from scopes, one account per subject | 2, 3, 8 | Implements 0012 |
-| 11 | `up/oidc-any-agent-client` (ID-U5) | — | planned | G2 | 6, 10 | Implements 0012 |
-| 12 | `up/user-management` (MU-c) | — | planned | people on the built-in IdP, API and SDK | 8 | Implements 0012 |
+| 11 | `up/oidc-any-agent-client` (ID-U5) | #79 | open; landed early in the fork (fork PR #17) | G2 | 6, 10 | Implements 0012 |
+| 12 | `up/people-management` (MU-c) | #80 | open; landed early in the fork (fork PR #19) | people on the built-in IdP, API and SDK | 8 | Implements 0012 |
 | 13 | `up/pwa-people` (MU-d) | — | planned | People and account screens in the PWA | 12 | Implements 0012 |
 | 14 | `up/pwa-refresh-lock` (ID-U6) | #69 | merged | G8 | — | No |
 | 15 | `up/pwa-rp-logout` (ID-U7) | #72 | merged | G9 | — | No |

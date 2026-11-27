@@ -649,17 +649,21 @@ boot. Tell the maintainer when R2 starts, and again if it passes that target.
 
 ## Release 2 (chrome and several users)
 
-**Draft.** An env-and-image upgrade on top of release 1, through DEPLOY.md §7, with no new data migration expected.
-It needs no window: intake is down only while the container is swapped (upgrade step 2, about a minute, while the
-new container turns healthy), and only signed-in pages change. The §1 waiver doesn't cover it; the maintainer
-runs it or gives a new one. Re-check this section against the release's own commit before using it.
+**Draft.** An env-and-image upgrade on top of release 1, through DEPLOY.md §7, with one small data migration:
+`0014_account_links` adds the empty `account_links` table (people management, philo-crm/philo#80, landed early as
+fork PR #19). It needs no window: intake is down only while the container is swapped (upgrade step 2, about a minute,
+while the new container migrates and turns healthy), and only signed-in pages change. The §1 waiver doesn't cover
+it; the maintainer runs it or gives a new one. Re-check this section against the release's own commit before using
+it.
 
 | | After release 1 | After release 2 |
 |---|---|---|
-| Image | `ol-v0.7.0-1` | The release-2 tag (`ol-v0.7.0-2`, or `ol-v<next>-1` if a sync lands first), which contains `oberon/web/philo-host.js` from `ol/chrome-wiring` and self-registered agents (philo-crm/philo#79, landed early as fork PR #17) |
+| Image | `ol-v0.7.0-1` | The release-2 tag (`ol-v0.7.0-2`, or `ol-v<next>-1` if a sync lands first), which contains `oberon/web/philo-host.js` from `ol/chrome-wiring`, self-registered agents (philo-crm/philo#79, landed early as fork PR #17) and people management (philo-crm/philo#80, fork PR #19) |
+| Data | Release 1's volume, 14 migrations | **The same volume**, migrated in place by `0014_account_links` (adds the `account_links` table, which stays empty under OL Auth: invite and reset links are the built-in IdP's) |
 | Top bar | Philo's own account menu | The shared bell, app switcher and account menu (chrome spec §3); Philo's menu returns on any chrome failure, and `/sign-out` always works |
 | Sign-in | Only `id=1`, by its bound subject | Every OL Auth person with a Philo role, with the role their token's scopes give (identity spec §4.5) |
 | Agents | API keys | Also MCP agents that register themselves with OL Auth (`PHILO_OIDC_AGENT_CLIENT_IDS=*`, ID-U5), each acting as the person who connected it, with that person's role. API keys keep working |
+| Removing someone | Nothing to remove: one account | An admin deactivates them through the people API (`PATCH /api/v1/users/:id`, ADR-0012), at once. There is no People screen in this build |
 
 ### Release 2: prerequisites (the maintainer confirms each)
 
@@ -682,6 +686,35 @@ runs it or gives a new one. Re-check this section against the release's own comm
   the last sign-in or agent request, not the cutover date. The rehearsal below reads it. Once the role scopes are on, a
   lapsed `id=1` fails `hasAccess` until the maintainer signs in on release 2 (the upgrade, step 3): its API keys answer
   401, and the admin fallback for new-lead email and the VAPID contact skip it. Do step 3 right after step 2.
+- [ ] **An admin's API key for the people API** (below), which offboarding uses: the maintainer has one for `id=1`,
+  or creates one after signing in on release 2. It stays with the maintainer. The rollbacks don't need it. The production host has `jq` and a `curl` of 7.55 or later
+  (`curl -H @file`).
+
+### Release 2: cut and check the release
+
+**The maintainer approves pushing the tag.** The release-2 commit is a fork `main` at or after fork PR #19, the
+merge that landed people management. From a checkout of the fork:
+
+```sh
+git fetch origin
+git fetch https://github.com/philo-crm/philo.git refs/tags/v0.5.1:refs/tags/v0.5.1 --no-tags   # the fork has no v* tags
+REL2_COMMIT=<the full SHA of the main commit to release>
+git merge-base --is-ancestor $REL2_COMMIT origin/main && echo on-main                          # on-main
+git merge-base --is-ancestor 076e66672b377b752497adf90dabc8413344518a $REL2_COMMIT && echo people  # people (fork PR #19)
+git merge-base --is-ancestor cfb9bd99599096529ba756d01840372ad016593c $REL2_COMMIT && echo agents  # agents (fork PR #17)
+git ls-tree --name-only $REL2_COMMIT oberon/web/philo-host.js                                  # oberon/web/philo-host.js
+git diff --name-only v0.5.1 $REL2_COMMIT -- 'packages/server/drizzle/*.sql'    # exactly 0013_user_roles.sql, 0014_account_links.sql
+git ls-tree --name-only $REL2_COMMIT packages/server/drizzle/ | grep -c '\.sql$'                # 15
+git show $REL2_COMMIT:packages/server/drizzle/meta/_journal.json | grep -c '"when": 1795751123839'   # 1 (0014's)
+git show $REL2_COMMIT:package.json | grep '"version"'                                         # names <version>
+git tag -a <tag> -m "<tag>" $REL2_COMMIT
+git push origin <tag>        # this one tag only; never --tags
+```
+
+`<tag>` is `ol-v<version>-<n>` (§0's table): `ol-v0.7.0-2` while the version is `0.7.0`. If the diff lists anything
+but those two migrations, stop: the rollback below covers only 0014 on top of release 1. Never push the fetched
+`v0.5.1` tag. Then take the image reference with its digest from the workflow's job summary and check it on the host
+without the data volume, as §4 does, before it goes into `vars.sh`.
 
 ### Release 2: working directory
 
@@ -707,6 +740,41 @@ and `--env-file /<deploy dir>/philo-ol.env` is part of the launch). Release 1's 
 `compose.yaml.stock`) may still exist if §9 hasn't deleted it: leave it alone, it has `--restart=no`.
 
 Keep a `log.md` here, as §1 says.
+
+### Release 2: the people API
+
+Deactivation (ADR-0012) is `PATCH /api/v1/users/:id` with `{"disabled": true}`, and only an admin may call it
+(`packages/server/src/users/routes.ts`; `app.ts`'s role guard). In one transaction it sets `disabled_at` and deletes
+everything the account holds: its API keys, its Philo-issued access and refresh tokens, authorization codes and
+sessions, its push subscriptions, and its pending links (`deactivate` in `users/service.ts`). An OL Auth token for it
+is refused with `403 account_disabled` from its next request, whatever scopes it carries (`verifyExternalToken` in
+`auth/external-idp.ts`); API keys and push already go through `hasAccess`, which refuses a disabled account. So it
+takes effect at once. Only an open live stream (`/api/v1/events`, `/api/v1/push/live`) runs on, to its 15-minute
+limit. `{"disabled": false}` restores sign-in, **not** the deleted keys and tokens: each person makes new keys. It
+refuses `cannot_change_self` (`409`, so `id=1` never deactivates itself) and `last_admin` (`409`). Because the
+deletion is permanent, the API is for offboarding only, behind that section's OK and backup. The rollbacks use the
+reversible `disabled_at` data step instead.
+
+§1's data rules hold for the API too. `GET /api/v1/users` returns names and emails, and a `PATCH` returns the
+person, so **never print a response**: print only the status code, or a count with `jq length`, and pass ids
+through a variable or a file, never the screen. The maintainer holds the key, so the maintainer writes the header
+file and nobody prints it:
+
+```sh
+. ~/philo-release2-<date>/vars.sh
+( umask 077; : > "$D/admin-key.hdr" )   # the maintainer puts one line in it: Authorization: Bearer <key>
+P=https://philo.oberonlogistics.com/api/v1/users
+curl -s -o /dev/null -w '%{http_code}\n' -H @"$D/admin-key.hdr" "$P"      # 200
+curl -s -o /dev/null -w '%{http_code}\n' -X PATCH -H @"$D/admin-key.hdr" \
+  -H 'content-type: application/json' -d '{}' "$P/1"                       # 409: the key is id=1's, and an admin's
+```
+
+The empty `PATCH` changes nothing: it answers `409` (`cannot_change_self`) only when the key acts as `id=1` with the
+admin role. **Anything but `409` is a stop**; don't go on with the API. `200` means the key is another admin's, not
+`id=1`'s (on `/1` the empty `PATCH` is then a harmless no-op), so it isn't the maintainer's key. `401` means the key
+doesn't resolve (`id=1` lapsed or wrong key); `403` means `id=1` isn't an admin (the roles rollback's A is 0). For
+`401` and `403`, the API can't be used until the maintainer signs in with `philo-admins`. Delete
+the header file (`rm "$D/admin-key.hdr"`) as soon as the step that needed it is done.
 
 ### Release 2: checks before the upgrade (read-only)
 
@@ -816,7 +884,7 @@ differs from §6 is written here. As in §6, there is no sign-in on the copy.
    is 1.
 3. **Before the first boot**, with §6's helper and the container stopped:
    - `PRAGMA integrity_check` is `ok`;
-   - `SELECT count(*), max(created_at) FROM __drizzle_migrations` is `14|1795723669355` (no new migration expected; any
+   - `SELECT count(*), max(created_at) FROM __drizzle_migrations` is `14|1795723669355` (release 1's last, 0013; any
      other answer is a stop);
    - `SELECT count(*) FROM users` is **U0**, and `SELECT count(*) FROM users WHERE id = 1 AND role = 'admin' AND
      disabled_at IS NULL` is 1;
@@ -829,14 +897,46 @@ differs from §6 is written here. As in §6, there is no sign-in on the copy.
    place.
 5. **API keys answer.** With the copy running, the maintainer runs this on the host (the key stays with them):
    `curl -s -o /dev/null -w '%{http_code}\n' -H 'Authorization: Bearer <key>' http://127.0.0.1:<port>/api/v1/funnels`.
-   Expect `200`, or `401` exactly when step 3 found `id=1` lapsed. Anything else is a stop.
-6. **After stopping it:** the migration count, U0 and the `id=1` admin count are unchanged, and `PRAGMA integrity_check`
-   is `ok`. Booting in role mode rewrites no role.
-7. **`id=1` stays admin on sign-in**, by the code path, since no OL Auth token reaches the copy: `id=1` is already
+   Expect `200`, or `401` exactly when step 3 found `id=1` lapsed. Anything else is a stop. Unless it was `401`, the
+   maintainer then runs the people API's probe against the copy, which offboarding relies on, with the same key:
+   ```sh
+   curl -s -o /dev/null -w '%{http_code}\n' -H 'Authorization: Bearer <key>' http://127.0.0.1:<port>/api/v1/users   # 200
+   curl -s -o /dev/null -w '%{http_code}\n' -X PATCH -H 'Authorization: Bearer <key>' \
+     -H 'content-type: application/json' -d '{}' http://127.0.0.1:<port>/api/v1/users/1                         # 409
+   ```
+   The empty `PATCH` writes nothing. Anything but `200` then `409` is a stop: the people API's probe would fail the
+   same way on production.
+6. **After stopping it:** 0014 has applied, and nothing else changed:
+   - `SELECT count(*), max(created_at) FROM __drizzle_migrations` is `15|1795751123839` (0014's `when` in
+     `packages/server/drizzle/meta/_journal.json`);
+   - `SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'account_links'` is 1, and
+     `SELECT count(*) FROM account_links` is 0;
+   - U0 and the `id=1` admin count are unchanged, and `PRAGMA integrity_check` is `ok`. Booting in role mode
+     rewrites no role.
+7. **Release 1's image boots on it**, which is what the image rollback relies on. Release 1's identity lines go in
+   their own file: `grep '^PHILO_OIDC_' /<deploy dir>/philo-ol.env.public.r1 > "$D/identity-r1.env"`. Boot
+   `"$R1_IMG"` with `"$D/identity-r1.env"` in place of `identity.env`. The wait reports `running healthy`, and the boot
+   log's identity line ends `, one account`. After stopping it, the migration line is still `15|1795751123839` and
+   `PRAGMA integrity_check` is `ok`: release 1 applied nothing and left the table alone (the image rollback below says
+   why).
+8. **0014's reversal works**, on the copy, with the container stopped. It is needed only on the way back to stock
+   (the image rollback's last paragraph). The migration line must be `15|1795751123839`. Then:
+   ```sh
+   docker run --rm -v philo-scratch:/data alpine sh -c 'apk add --no-cache sqlite >/dev/null && sqlite3 -bail /data/philo.db "
+     BEGIN;
+     DROP TABLE account_links;
+     DELETE FROM __drizzle_migrations WHERE created_at = 1795751123839;
+     SELECT changes();
+     COMMIT;" && chown -R 1000:1000 /data'                # expect 1
+   ```
+   Afterwards the migration line is `14|1795723669355`, and
+   `SELECT count(*) FROM sqlite_master WHERE name LIKE 'account_links%'` is 0 (the table and both its indexes). Boot
+   `"$R1_IMG"` with `identity-r1.env` once more: it turns healthy, and the migration line stays `14|1795723669355`.
+9. **`id=1` stays admin on sign-in**, by the code path, since no OL Auth token reaches the copy: `id=1` is already
    bound, so its token finds it by subject (`findOrProvisionAccount` in `external-idp.ts`), and with `philo:admin`
    `confirmRole` keeps `admin` and refreshes the confirmation. Only a PWA token without `philo:admin` demotes it, which
    is why the maintainer must hold `philo-admins` first. The live check is the upgrade's steps 3 and 5.
-8. **Delete the copy straight away** with §6 step 10, then `rm "$D/today.env"`.
+10. **Delete the copy straight away** with §6 step 10, then `rm "$D/today.env" "$D/identity-r1.env"`.
 
 ### Release 2: the upgrade
 
@@ -872,7 +972,9 @@ differs from §6 is written here. As in §6, there is no sign-in on the copy.
      from `vars.sh` typed out, then `docker compose up -d` with the project and file recorded in §3. Compose stops
      the old container before it creates the new one.
 
-   Then the bounded wait: `sh "$D/wait.sh" <philo container>`. If it fails, read only
+   The first boot applies 0014 before it listens. It logs nothing for that, and a failure there fails the boot,
+   with none of 0014 left behind (one transaction, as §8 R2 explains). Then the bounded wait:
+   `sh "$D/wait.sh" <philo container>`. If it fails, read only
    `docker logs <philo container> 2>&1 | grep -iE 'error|config'`, under the data rules, and go to the image
    rollback below.
 3. The maintainer signs in to the PWA through OL Auth. Check: the top bar shows the bell, the app switcher (with the
@@ -918,7 +1020,8 @@ Then the bounded wait, `sh "$D/wait.sh" <philo container>`. If it fails, go to t
   the next request; API keys keep working.
 - **Roles trouble: fix it at OL Auth first, with the scopes still on.** Someone removed from both roles is refused
   (`insufficient_scope`) from their first token without a Philo scope, in the PWA and through agents, and their stored
-  role lapses after 30 days. A wrong role is corrected by changing the OL Auth role and signing in again.
+  role lapses after 30 days, which is when their API keys stop. To cut someone off at once, deactivate them as
+  offboarding (below) does. A wrong role is corrected by changing the OL Auth role and signing in again.
 - **Roles trouble that OL Auth can't fix:** the env change removes the three `PHILO_OIDC_*_SCOPE` lines, together
   (one without the other is a startup error), and `PHILO_OIDC_AGENT_CLIENT_IDS` (`*` needs both scopes). The boot
   line then ends `, one account` again. **That alone does not shut out accounts created on release 2.** In
@@ -927,8 +1030,15 @@ Then the bounded wait, `sh "$D/wait.sh" <philo container>`. If it fails, go to t
   `hasAccess` in `access.ts`). Another `philo-admins` member would stay admin indefinitely. And one-account mode never
   promotes, so an `id=1` demoted on release 2 would leave nobody able to reach Server settings.
 
-  This build can't deactivate anyone: people management (ADR-0012) isn't built, so neither the UI nor the API sets
-  `disabled_at`. So do it in this order, and start the container only at the end:
+  So the accounts release 2 created are deactivated as well, by the **`disabled_at` data step**, with the container
+  stopped. A rollback doesn't use the people API: the container is stopped for the env change anyway, so the data
+  step costs no extra downtime, and it deletes nothing. Both images refuse a disabled account everywhere: `hasAccess`
+  (`access.ts`) refuses its API keys and push, and its OL Auth tokens are refused too, with `403 account_disabled`
+  while the role scopes are on (`verifyExternalToken`) and as unauthenticated in one-account mode
+  (`findOrProvisionOnlyAccount` passes the row through `hasAccess`). That code is the same in release 1 (`1041266`)
+  and release 2. Because nothing is deleted, the undo below brings back their sign-in **and** their keys. The API's
+  deactivation, which deletes keys and tokens for good, is for offboarding only. Do it in this order, and start the
+  container only at the end:
 
   1. **Stop.** `docker stop <philo container>` (under Compose, `docker compose stop` with §3's project and file).
      Check it is the container upgrade step 2 started:
@@ -942,19 +1052,27 @@ Then the bounded wait, `sh "$D/wait.sh" <philo container>`. If it fails, go to t
        SELECT count(*), max(created_at) FROM __drizzle_migrations;" && chown -R 1000:1000 /data'
      ```
      Write the three lines to the log. The first is **A**, the second **N**, and the third must be
-     `14|1795723669355` (anything else means a migration came after all: stop and ask).
+     `15|1795751123839`, release 2's last migration (anything else: stop and ask). A doesn't read
+     `role_confirmed_at`, and needn't: one-account mode ignores the 30-day rule, so a lapsed `id=1` works again after
+     step 5.
      - **A is 1 and N is 0:** no data step. Go to step 5.
+     - **A is 1 and N is more than 0:** steps 3 and 4 (the gate, then the disabling write).
      - **A is 0:** `id=1` was demoted, most likely by a sign-in without `philo-admins`. Prefer the OL Auth fix while
        the scopes are still on: start the container again unchanged (`docker start <philo container>`, or
        `docker compose start`, then the bounded wait), have the maintainer add `philo-admins` and sign in to the PWA,
-       which sets admin again (`confirmRole`), and then start over at step 1. Only if that can't be done, step 4's
-       admin write.
-  3. **The OK and a backup.** Step 4's writes run only with the **maintainer's OK**, and only after a fresh backup:
-     upgrade step 1's block with `prerelease2` and `philo-prerelease2.db` replaced by `rollback-<HHMM>` and
-     `philo-rollback-<HHMM>.db`. Expect `ok`, write the count to the log, and copy the three files off the host as
-     there.
-  4. **The data step**, with the container still stopped. Each write prints a count. If it prints anything other than
-     the count named here, stop: the UPDATE has already committed, so restore the backup just taken
+       which sets admin again (`confirmRole`), and then start over at step 1. Only if that can't be done, steps 3
+       and 4: the gate, then the admin write (and the disabling write too, if N is more than 0).
+  3. **The OK and a backup.** Nothing in step 4 runs without both:
+     - **The maintainer's explicit OK**, given after they hear the consequence: N accounts (say the number) can't sign
+       in, and their API keys, agents and push stop, until the undo below; nothing is deleted, and the undo brings
+       all of it back. For the admin write: `id=1` becomes an admin again. The OK covers the undo too. Write the OK
+       and its time to the log.
+     - **A fresh, named backup**, copied off the host: upgrade step 1's block with `prerelease2` and
+       `philo-prerelease2.db` replaced by `rollback-<HHMM>` and `philo-rollback-<HHMM>.db`. Expect `ok`, write the
+       count to the log, and copy the three files off the host as there. `prerelease2` doesn't do: it predates every
+       account release 2 made.
+  4. **The data step**, with the container still stopped. Each write prints a count. If it prints anything other
+     than the count named here, stop: the UPDATE has already committed, so restore step 3's backup
      (DEPLOYMENT.md § Restoring the online backup, with the container stopped), or ask.
      - **The admin write**, only if A is 0 and OL Auth can't fix it. It prints `1`:
        ```sh
@@ -970,25 +1088,35 @@ Then the bounded wait, `sh "$D/wait.sh" <philo container>`. If it fails, go to t
          SELECT changes();" && chown -R 1000:1000 /data'
        ```
        `disabled_at` is milliseconds (`timestamp_ms` in `schema.ts`; migration 0013 writes `role_confirmed_at` the
-       same way). `hasAccess` then refuses those accounts' sign-ins, API keys and push. Write T1, T2 and N to the log.
+       same way). Write T1, T2 and N to the log.
   5. **The env change and the start.** Edit the env and rebuild it, as above. Then, under `docker run`,
      `docker rm <philo container>` (step 1 checked it) and start it with upgrade step 2's launch; under Compose,
      `docker compose up -d --force-recreate`. Then the bounded wait, and the boot line
      (`docker logs <philo container> 2>&1 | grep -E '^  identity'`) ends `, one account`.
 
-  **Undo the disabling write** once the scopes are back on, with the same OK, a new backup and the container
-  stopped: `UPDATE users SET disabled_at = NULL WHERE id <> 1 AND disabled_at BETWEEN <T1> AND <T2>; SELECT
-  changes();` prints N, with step 4's rule for anything else. The bounds leave out anyone offboarded (below) before
-  T1 or after T2. People management (`up/user-management`, in progress) replaces this data step with its deactivation
-  API once it lands in the fork; this runbook is updated then.
+  **Undo it** once the scopes are back on (the env change reverted and the container recreated, as above). It runs
+  under step 3's OK, which covered it, with a new backup (step 3's block, a new `<HHMM>`) and the container stopped:
+  `UPDATE users SET disabled_at = NULL WHERE id <> 1 AND disabled_at BETWEEN <T1> AND <T2>; SELECT changes();`
+  prints N, with step 4's rule for anything else. Run it as the rollback ran its write: step 1's stop (with its image
+  check), the new backup, the SQL inside step 4's `docker run … sqlite3 -bail … && chown` wrapper, then
+  `docker start <philo container>` (or `docker compose start`) and the bounded wait. The bounds leave out anyone offboarded before T1. Nobody can be
+  offboarded between T1 and the undo (see "Release 2: offboarding"), so no one else is caught. Their
+  sign-in, keys and push are back as they were. A reactivation through the API (`{"disabled":false}`) does the same
+  for one account, since the data step deleted nothing.
 - **The image itself fails**, or upgrade step 2's wait failed: back to release 1's image, env and container. Release
   1's image runs one-account mode too, so the accounts need the same check.
   1. **Stop.** `docker stop <philo container>` (under Compose, `docker compose stop`). This also stops a
      crash-looping container.
-  2. **The roles rollback's steps 2 to 4**: the account check, then, if needed, the OK, a backup and the data step.
-     The migration line decides first: anything other than `14|1795723669355` means §8 R2's reasoning applies, so
-     stop and ask. If A is 0, the OL Auth fix needs release 2 to boot; if it doesn't, use the admin write. If the
-     wait in upgrade step 2 failed, nobody signed in on release 2, and the check should find A 1 and N 0.
+  2. **The roles rollback's steps 2 to 4**: the account check, then, if needed, the OK and a backup (its step 3,
+     before any write) and the data step. The migration line decides first. Drizzle runs a boot's pending migrations
+     in one transaction (§8 R2), so a failed boot leaves all of 0014 or none of it:
+     - **`15|1795751123839`:** 0014 applied. Release 1's image runs on it as it is (below): no reversal.
+     - **`14|1795723669355`:** 0014 never committed; release 2's first boot failed before it. Nothing to reverse.
+     - **Anything else:** stop and ask.
+
+     If A is 0, the OL Auth fix needs release 2 to boot; if it doesn't, use the admin write. If the wait in upgrade
+     step 2 failed, nobody signed in on release 2, and the check should find A 1 and N 0. The undo is the roles
+     rollback's, run once release 2 is back.
   3. **Release 1's env files** back, from the copies:
      ```sh
      . ~/philo-release2-<date>/vars.sh
@@ -1016,20 +1144,95 @@ Then the bounded wait, `sh "$D/wait.sh" <philo container>`. If it fails, go to t
      `docker inspect --format '{{.Config.Image}}' <philo container>` prints the `R1_IMG` value and that the boot line
      ends `, one account`. If the wait fails, stop and tell the maintainer.
 
+  **Why release 1's image needs no reversal.** Both images ship `drizzle-orm` 0.45.2. Its migrator
+  (`SQLiteSyncDialect.migrate`) reads only the newest `__drizzle_migrations` row and applies each migration whose
+  `when` is later than that row's `created_at`. Release 1's newest migration (0013, `1795723669355`) is earlier than
+  0014's row (`1795751123839`), so release 1 applies nothing and touches neither the row nor `account_links`. Its other
+  boot checks pass too: the migration count only decides the one-time VACUUM (`before < 10`), and
+  `PRAGMA foreign_key_check` stays clean because nothing in release 1 deletes a user, the only row `account_links`
+  points to. The rehearsal's step 7 runs this on production's data. Leave the table and the row in place. If release 2
+  is tried again later, it finds 0014 applied and applies nothing.
+
+  **Further back, to stock 0.5.1**, only if release 1's image fails too. That is §8 R2, and its checks expect release
+  1's state, so 0014 goes first. With the container stopped and a fresh backup taken (upgrade step 1's block, with
+  `rollback-<HHMM>`), the migration line must be `15|1795751123839`. Run the rehearsal's step 8 reversal with
+  `-v <data volume>:/data` in place of `-v philo-scratch:/data`. It prints `1`, and the migration line is then
+  `14|1795723669355`. Then §8 R2 from its step 3, which reverses 0013. Its "more than 1 user: stop and ask" applies,
+  and after release 2 it is the likely answer. `account_links` holds nothing worth keeping under OL Auth: invite and
+  reset links are refused there (`managed_by_idp`).
+
 Then the upgrade's steps 3, 4 and 7 again: expecting Philo's own menu after a chrome, roles or image rollback, and the
 shared chrome still after an agent-only one.
 
 ### Release 2: offboarding
 
-To remove someone at once, remove their roles at OL Auth. Their PWA and agent access ends with their current tokens,
-but their Philo API keys still work for up to 30 days (until `role_confirmed_at` lapses, `hasAccess`). For an
-immediate cut-off, until people management lands, use the rollback's disabling write for that one account. Intake is
-down from step 1 to step 4:
+To remove someone, an admin deactivates them through the people API, and the maintainer removes their roles at OL
+Auth. Deactivation is immediate and permanent where it matters: it deletes their API keys, Philo-issued tokens and
+push subscriptions for good, and refuses their OL Auth tokens from the next request (the people API above). Philo
+keeps running, and intake isn't touched.
+
+**Not during a rollback.** While a roles or image rollback's `disabled_at` data step is in effect (between its T1
+and its undo), don't offboard anyone. Every other account is already disabled, so the API's deactivation writes
+nothing and deletes no keys, and the undo would bring the person back with their keys. Record the offboarding as
+**pending** in the log (the time and "pending", not the address), and tell the maintainer. Run it right after the
+undo, as below. If the maintainer needs the person cut off at once during the rollback, they are already refused:
+every account except `id=1` is disabled. Until the undo, removing their roles at OL Auth is enough.
+
+1. **The OK and a backup.** Nothing in step 3 runs without both:
+   - **The maintainer's explicit OK**, given after they hear the consequence: this person's API keys, tokens and push
+     subscriptions are **deleted for good**. A reactivation restores sign-in only; they'd make new keys and
+     re-connect their agents. Write the OK and its time to the log, not the address.
+   - **A fresh, named backup**, copied off the host: upgrade step 1's block with `prerelease2` and
+     `philo-prerelease2.db` replaced by `offboard-<HHMM>` and `philo-offboard-<HHMM>.db` (the online form, with
+     production running). Expect `ok`, write the count to the log, and copy the three files off the host as there.
+**Steps 2 and 3 are the maintainer's**, at their own terminal. `read` needs a person typing the address, and an
+agent would have to put it back into argv or history. The agent prepares the commands and checks the outcome codes
+they report.
+
+2. **Find them.** Run the people API's checks first (`200`, then `409`), then this. `read` takes the address from
+   the terminal, so it stays out of shell history:
+   ```sh
+   . ~/philo-release2-<date>/vars.sh
+   P=https://philo.oberonlogistics.com/api/v1/users
+   read -r E                     # type their address, then Enter
+   F='[.users[] | select((.email | ascii_downcase) == ($e | ascii_downcase) and .id != 1)]'
+   curl -s -H @"$D/admin-key.hdr" "$P" | jq --arg e "$E" "$F | length"                          # 1
+   curl -s -H @"$D/admin-key.hdr" "$P" | jq --arg e "$E" "$F | map(select(.status == \"disabled\")) | length"   # 0
+   ```
+   Anything but `1`, then `0`, is a stop. `0` on the first line means no such account (or it is `id=1`, which can't
+   deactivate itself). `1` on the second means they are already deactivated, most likely by a rollback's data step
+   that hasn't been undone. Deactivating them again would write nothing and delete no keys (see "Not during a
+   rollback" above), so tell the maintainer. Either way, run `unset E; rm "$D/admin-key.hdr"` and go no further.
+3. **Deactivate them**, in the same shell:
+   ```sh
+   id=$(curl -s -H @"$D/admin-key.hdr" "$P" | jq --arg e "$E" "$F | .[0].id")
+   [ "$id" != null ] && [ -n "$id" ] &&
+     curl -s -o /dev/null -w '%{http_code}\n' -X PATCH -H @"$D/admin-key.hdr" \
+       -H 'content-type: application/json' -d '{"disabled":true}' "$P/$id"                     # 200
+   curl -s -H @"$D/admin-key.hdr" "$P" | jq --arg e "$E" "$F | map(select(.status == \"disabled\")) | length"   # 1
+   unset E id; rm "$D/admin-key.hdr"
+   ```
+   No code printed (the guard found no id), any code but `200`, or a last count that isn't 1, is a stop. Write down
+   `date +%s%3N` in the log as the offboarding time, not the address (no row content in the log).
+
+Undo, if it was a mistake: the same `PATCH` with `{"disabled":false}`. That restores sign-in, not the deleted keys.
+
+**Only if no admin can use the API**, the data step instead. First, with `sqlite3 -readonly` in the helper container,
+`SELECT count(*) FROM users WHERE role = 'admin' AND disabled_at IS NULL AND id <> <their id>` must be at least 1. If
+it is 0, this would leave no active admin: do the OL Auth fix first (`philo-admins` and a sign-in). The maintainer runs this
+fallback at their own terminal, as with steps 2 and 3. They look up the id read-only (`SELECT id FROM users WHERE
+lower(email) = lower('<address>')`, with a leading space so the command stays out of shell history), then disable by
+that id. The agent never types the address. Intake is down from step 1 to step 4:
 
 1. **Stop**, as the roles rollback's step 1 does.
-2. **The OK and a backup**, as its step 3 does.
-3. **The write.** Write down `date +%s%3N` in the log as the offboarding time (not the address: no row content in
-   the log). Run the disabling write with `WHERE email = '<their address, in lower case>' AND id <> 1 AND disabled_at
-   IS NULL` in place of its `WHERE`. `SELECT changes()` must print 1, with step 4's rule for anything else.
+2. **The OK and a backup**, as its step 3 does, before any write. The consequence to state: this one person can't
+   sign in, and their keys, agents and push stop; nothing is deleted, and **any reactivation, the API's
+   `{"disabled":false}` included, brings their keys back**.
+3. **The write.** Write down `date +%s%3N` in the log as the offboarding time. Run the roles rollback's step 4
+   disabling write with `WHERE email = '<their address, in lower case>' AND id <> 1 AND disabled_at IS NULL` in place
+   of its `WHERE`. `SELECT changes()` must print 1, with step 4's rule for anything else. Unlike the API, this
+   deletes nothing: their keys stay in the database, refused by `hasAccess` while `disabled_at` is set. A later
+   `PATCH` with `{"disabled":true}` doesn't delete them either, because the account is already deactivated. Write
+   that in the log next to the time.
 4. **Start it again unchanged**: `docker start <philo container>` (under Compose, `docker compose start`), then the
    bounded wait.
